@@ -137,7 +137,7 @@ class AuthService {
       timeout: const Duration(seconds: 60),
       verificationCompleted: (PhoneAuthCredential credential) {
         loading = false;
-        GlobalSnackBarGet().showGetSucess("Sucess", "OTP Verified");
+        GlobalSnackBarGet().showGetSucess("Success", "OTP Verified");
         FirebaseAuth.instance.signInWithCredential(credential);
       },
       verificationFailed: (FirebaseAuthException e) {
@@ -152,7 +152,7 @@ class AuthService {
       codeSent: (String verificationId, int? resendToken) async {
         Singup.verifiId = verificationId;
         GlobalSnackBarGet().showGetSucess(
-            "Sucess", 'Code sucessfully to mobile number $number');
+            "Success", 'Code successfully sent to mobile number $number');
 
         //Go to OTP entering Page
         Navigator.push(
@@ -172,7 +172,7 @@ class AuthService {
         verificationId: Singup.verifiId, smsCode: smsCode!);
     try {
       await FirebaseAuth.instance.signInWithCredential(credential);
-      GlobalSnackBarGet().showGetSucess("Sucess", "Sucesssfully Logged In");
+      GlobalSnackBarGet().showGetSucess("Success", "Successfully Logged In");
     } catch (e) {
       if (e.toString().contains("invalid-verification-code")) {
         GlobalSnackBarGet().showGetError("Error", "Invalid OTP");
