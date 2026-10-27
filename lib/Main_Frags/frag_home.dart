@@ -6,7 +6,7 @@ import 'package:optionxi/Components/cust_upgrade_to_pro.dart';
 import 'package:optionxi/Main_Frags/home_sections/sec_backtesting_modern.dart';
 import 'package:optionxi/Main_Frags/home_sections/sec_broker_list.dart';
 import 'package:optionxi/Components/cust_ai_sentiment_section.dart';
-import 'package:optionxi/Components/cust_market_glance.dart';
+import 'package:optionxi/Main_Frags/home_sections/sec_market_glance.dart';
 import 'package:optionxi/Components/cust_market_trend_section.dart';
 import 'package:optionxi/Components/cust_pratice_trading.dart';
 import 'package:optionxi/Components/cust_tools_chips_markettrend.dart';
@@ -16,6 +16,7 @@ import 'package:optionxi/Components/cust_tools_chips_mytools.dart';
 import 'package:optionxi/Components/cust_top_tutors.dart';
 import 'package:optionxi/Components/cust_searchbar.dart';
 import 'package:optionxi/Components/cust_floating_ai.dart';
+import 'package:optionxi/Main_Frags/home_sections/sec_learn_optionxi.dart';
 import 'package:optionxi/Main_Frags/home_sections/sec_market_sentiments_index.dart';
 import 'package:optionxi/Main_Frags/home_sections/sec_market_sentiments_stocks.dart';
 import 'package:optionxi/Main_Frags/home_sections/sec_stratergy_builder.dart';
@@ -62,16 +63,16 @@ class _TradingHomeScreenState extends State<TradingHomeScreen>
   Widget build(BuildContext context) {
     AchievementEvents.dailyActivity();
     return Scaffold(
-      floatingActionButton: MagicalAIButton(
-        onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ChatScreen(),
-            ),
-          );
-        },
-      ),
+      // floatingActionButton: MagicalAIButton(
+      //   onPressed: () {
+      //     Navigator.push(
+      //       context,
+      //       MaterialPageRoute(
+      //         builder: (context) => ChatScreen(),
+      //       ),
+      //     );
+      //   },
+      // ),
       body: SafeArea(
         child: SingleChildScrollView(
           physics: BouncingScrollPhysics(),
@@ -124,25 +125,26 @@ class _TradingHomeScreenState extends State<TradingHomeScreen>
                       ),
                     ),
                     SizedBox(height: 24),
-                    PracticeTradeCard(),
+                    // LearnOptionXIBanner(),
                     SizedBox(height: 10),
+                    VirtualTradingCard(),
+                    SizedBox(height: 8),
                     AlgoNotificationBanner(),
-                    SizedBox(height: 8),
-                    BacktestingHomeSection(),
-                    SizedBox(height: 8),
-                    StrategyBuilderBanner(),
-                    SizedBox(height: 8),
-                    StockChipsSectionMarketTrend(),
-                    SizedBox(height: 16),
-                    ProUpgradeButton(),
+                    // SizedBox(height: 8),
+                    // BacktestingHomeSection(),
+                    // SizedBox(height: 8),
+                    // StrategyBuilderBanner(),
+                    // SizedBox(height: 8),
+                    // StockChipsSectionMarketTrend(),
+
                     SizedBox(height: 8),
                     MarketSentimentSection_Index(),
                     SizedBox(height: 8),
-                    MarketSentimentSection_Stocks(),
+                    AiPicksPortfolioSection(),
                     SizedBox(height: 8),
-                    BreakoutsSection(),
-                    SizedBox(height: 8),
-                    StockChipsSectionResearch(),
+                    // BreakoutsSection(),
+                    // SizedBox(height: 8),
+                    // StockChipsSectionResearch(),
 
                     SizedBox(height: 8),
                     BacktestingSection(
@@ -150,8 +152,8 @@ class _TradingHomeScreenState extends State<TradingHomeScreen>
                       onAiPicksTap: () => Get.toNamed('/backtest/ai-picks'),
                       onScreenerTap: () => Get.toNamed('/backtest/screener'),
                     ),
-                    SizedBox(height: 8),
-                    OptionChainHomepageBanner(),
+                    // SizedBox(height: 8),
+                    // OptionChainHomepageBanner(),
                     SizedBox(height: 8),
                     StockChipsSectionMyTools(),
                     SizedBox(height: 24),
@@ -185,6 +187,8 @@ class _TradingHomeScreenState extends State<TradingHomeScreen>
                         onTap: () => {Get.toNamed('/deploy-algo')},
                         child: _buildCtaSection()),
                     const SizedBox(height: 12),
+                    SizedBox(height: 16),
+                    ProUpgradeButton(),
                   ],
                 );
               },

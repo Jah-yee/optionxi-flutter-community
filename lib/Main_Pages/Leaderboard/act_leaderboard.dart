@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:optionxi/Main_Pages/BollingerBreakouts/act_breakout_page.dart';
 import 'package:optionxi/Main_Pages/Profile/act_traderprofile.dart';
 import 'package:optionxi/PushNotification/notifcation_service_firebase.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 // ─────────────────────────────────────────────────────────────
 //  DESIGN SYSTEM
@@ -386,6 +387,7 @@ class LeaderboardPage extends StatefulWidget {
 
 class _LeaderboardPageState extends State<LeaderboardPage>
     with SingleTickerProviderStateMixin {
+  final SupabaseClient _supabase = Supabase.instance.client;
   late AnimationController _listAnim;
   List<LeaderboardEntry> leaderboardEntries = [];
   bool isLoading = true;
@@ -408,7 +410,7 @@ class _LeaderboardPageState extends State<LeaderboardPage>
         error = null;
       });
 
-      final response = await supabase
+      final response = await _supabase
           .from('prev_balance')
           .select('suid, balance, displayname, imgurl')
           .order('balance', ascending: false)

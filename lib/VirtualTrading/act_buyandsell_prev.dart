@@ -627,7 +627,7 @@ class _BuyandSellPagePrevState extends State<BuyandSellPagePrev> {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              Icons.candlestick_chart_rounded,
+              Icons.show_chart_rounded,
               color: isDark ? Colors.white : Colors.black,
               size: 20,
             ),

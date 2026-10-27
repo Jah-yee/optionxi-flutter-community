@@ -1,14 +1,37 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:optionxi/Helpers/constants.dart';
+import 'package:intl/intl.dart';
 import 'package:optionxi/PushNotification/notifcation_service.dart';
 import 'package:optionxi/VirtualTradeJournal/edit_basket_page.dart';
+import 'package:optionxi/VirtualTradeJournal/journal_ui_kit.dart';
 import 'package:optionxi/VirtualTrading/VDataModel/v_holdings_journal.dart';
 
+/// Opens the "Close this trade" sheet. Resolves to `true` if a close request
+/// was sent.
+Future<bool?> showExitPositionDialog(
+  BuildContext context,
+  BasketUserHolding userholding,
+  double currentLtp,
+  bool isshort,
+) =>
+    showJtSheet<bool>(
+      context,
+      (_) => ExitPositionDialog(
+        userholding: userholding,
+        currentLtp: currentLtp,
+        isshort: isshort,
+      ),
+    );
+
+/// "Close this trade" sheet.
+///
+/// Plain-language flow: how many shares → at what price → when → see what
+/// you'd make → confirm. The data written to Firebase is unchanged
+/// (`virtualbasket_toexit/{uid}/{orderId}`).
 class ExitPositionDialog extends StatefulWidget {
   final BasketUserHolding userholding;
   final double currentLtp;
@@ -26,137 +49,146 @@ class ExitPositionDialog extends StatefulWidget {
 }
 
 class _ExitPositionDialogState extends State<ExitPositionDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _exitPriceController = TextEditingController();
-  final _quantityController = TextEditingController();
-  DateTime _selectedDate = DateTime.now();
-  TimeOfDay _selectedTime = TimeOfDay.now();
-  bool _isLoading = false;
+  final _qtyCtrl = TextEditingController();
+  final _priceCtrl = TextEditingController();
+
+  bool _useNow = true;
+  DateTime _picked = DateTime.now();
+  bool _submitting = false;
+  String? _error;
+
+  BasketUserHolding get _h => widget.userholding;
+  bool get _hasLivePrice => widget.currentLtp > 0;
+
+  int get _qty => int.tryParse(_qtyCtrl.text) ?? 0;
+  double? get _price {
+    final v = double.tryParse(_priceCtrl.text.replaceAll(',', ''));
+    return (v == null || v <= 0) ? null : v;
+  }
+
+  bool get _qtyOk => _qty > 0 && _qty <= _h.quantity;
 
   @override
   void initState() {
     super.initState();
-    // Pre-fill with current LTP and total quantity
-    _exitPriceController.text = widget.currentLtp.toStringAsFixed(2);
-    _quantityController.text = widget.userholding.quantity.toString();
+    _qtyCtrl.text = _h.quantity.toString();
+    if (_hasLivePrice) _priceCtrl.text = widget.currentLtp.toStringAsFixed(2);
+    _qtyCtrl.addListener(_refresh);
+    _priceCtrl.addListener(_refresh);
+  }
+
+  void _refresh() {
+    if (!mounted) return;
+    setState(() => _error = null);
   }
 
   @override
   void dispose() {
-    _exitPriceController.dispose();
-    _quantityController.dispose();
+    _qtyCtrl.dispose();
+    _priceCtrl.dispose();
     super.dispose();
   }
 
-  String _getDisplaySymbol(String symbol) {
-    try {
-      // Handle cases like "NSE:REL-EQ"
-      if (!symbol.contains('-')) {
-        return symbol.split(':').last; // Returns "REL-EQ"
-      }
+  // ── Actions ────────────────────────────────────────────────────────────
 
-      final parts = symbol.split(':')[1].split('-');
-
-      // Handle index symbols like BANKNIFTY or NIFTY
-      if (parts[0] == 'BANKNIFTY' || parts[0] == 'NIFTY') {
-        return '${parts[0]} ${parts[1]}'; // Returns "BANKNIFTY 22DEC22"
-      }
-
-      // Default case for normal stocks with expiry
-      return parts[0]; // Returns the stock name before the hyphen
-    } catch (e) {
-      return symbol; // Fallback to original symbol if parsing fails
-    }
+  void _setQty(int q) {
+    final v = q.clamp(1, _h.quantity);
+    _qtyCtrl.text = v.toString();
+    _qtyCtrl.selection = TextSelection.collapsed(offset: _qtyCtrl.text.length);
+    HapticFeedback.selectionClick();
   }
 
-  void _editBasket() async {
+  Future<void> _editTrade() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => EditBasketPage(basket: widget.userholding),
-      ),
+      MaterialPageRoute(builder: (_) => EditBasketPage(basket: _h)),
     );
-
-    Navigator.of(context).pop(); // Return indicator for edit action
+    if (mounted) Navigator.of(context).pop();
   }
 
-  Future<void> _selectDate() async {
-    final DateTime? picked = await showDatePicker(
+  Future<void> _pickDate() async {
+    final entry =
+        DateTime(_h.entryDate.year, _h.entryDate.month, _h.entryDate.day);
+    final now = DateTime.now();
+    final first = entry.isAfter(now) ? now : entry;
+    final initial = _picked.isBefore(first)
+        ? first
+        : (_picked.isAfter(now) ? now : _picked);
+    final d = await showDatePicker(
       context: context,
-      initialDate: _selectedDate,
-      firstDate: widget.userholding.entryDate,
-      lastDate: DateTime.now(),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
-                  primary: Colors.blue.shade600,
-                ),
-          ),
-          child: child!,
-        );
-      },
+      initialDate: initial,
+      firstDate: first,
+      lastDate: now,
     );
-    if (picked != null && picked != _selectedDate) {
+    if (d != null && mounted) {
       setState(() {
-        _selectedDate = picked;
+        _picked =
+            DateTime(d.year, d.month, d.day, _picked.hour, _picked.minute);
+        _error = null;
       });
     }
   }
 
-  Future<void> _selectTime() async {
-    final TimeOfDay? picked = await showTimePicker(
+  Future<void> _pickTime() async {
+    final t = await showTimePicker(
       context: context,
-      initialTime: _selectedTime,
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
-                  primary: Colors.blue.shade600,
-                ),
-          ),
-          child: child!,
-        );
-      },
+      initialTime: TimeOfDay.fromDateTime(_picked),
     );
-    if (picked != null && picked != _selectedTime) {
+    if (t != null && mounted) {
       setState(() {
-        _selectedTime = picked;
+        _picked = DateTime(
+            _picked.year, _picked.month, _picked.day, t.hour, t.minute);
+        _error = null;
       });
     }
   }
 
-  Future<void> _submitExit() async {
-    if (!_formKey.currentState!.validate()) return;
+  String? _validate(DateTime when) {
+    if (!_qtyOk) {
+      return 'Enter a number of shares between 1 and ${_h.quantity}.';
+    }
+    if (_price == null) return 'Enter the price you closed at.';
+    if (when.isAfter(DateTime.now().add(const Duration(minutes: 1)))) {
+      return 'That time is in the future. Pick a time that has already passed.';
+    }
+    // Compare calendar days only, so a same-day close is never blocked by a
+    // time-of-day mismatch.
+    final whenDay = DateTime(when.year, when.month, when.day);
+    final entryDay =
+        DateTime(_h.entryDate.year, _h.entryDate.month, _h.entryDate.day);
+    if (whenDay.isBefore(entryDay)) {
+      return 'You can\'t close a trade before the day it was opened '
+          '(${DateFormat('d MMM yyyy').format(_h.entryDate)}).';
+    }
+    return null;
+  }
+
+  Future<void> _submit() async {
+    final when = _useNow ? DateTime.now() : _picked;
+    final problem = _validate(when);
+    if (problem != null) {
+      HapticFeedback.mediumImpact();
+      setState(() => _error = problem);
+      return;
+    }
 
     setState(() {
-      _isLoading = true;
+      _submitting = true;
+      _error = null;
     });
 
     try {
       final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw Exception('User not authenticated');
-      }
+      if (user == null) throw Exception('User not authenticated');
 
-      final exitDateTime = DateTime(
-        _selectedDate.year,
-        _selectedDate.month,
-        _selectedDate.day,
-        _selectedTime.hour,
-        _selectedTime.minute,
-      );
+      final exitPrice = _price!;
+      final exitQuantity = _qty;
+      final stockName = _h.symbol;
 
-      final exitPrice = double.parse(_exitPriceController.text);
-      final exitQuantity = int.parse(_quantityController.text);
-      final stockName = widget.userholding.symbol;
-
-      // Generate a unique order ID
       final DatabaseReference database = FirebaseDatabase.instance.ref();
       final String orderId =
           database.child('virtualbasket_toexit').child(user.uid).push().key ??
               DateTime.now().millisecondsSinceEpoch.toString();
 
-      // Push to Firebase Realtime Database
       await database
           .child('virtualbasket_toexit')
           .child(user.uid)
@@ -165,614 +197,640 @@ class _ExitPositionDialogState extends State<ExitPositionDialog> {
         'symbol': stockName,
         'exit_price': exitPrice,
         'exit_quantity': exitQuantity,
-        'exit_datetime': exitDateTime.toIso8601String(),
+        'exit_datetime': when.toIso8601String(),
         'created_at': ServerValue.timestamp,
-        'isshort': widget.isshort
+        'isshort': widget.isshort,
       });
 
-      if (mounted) {
-        // ScaffoldMessenger.of(context).showSnackBar(
-        //   SnackBar(
-        //     content: Text(
-        //         '${stockName} position exited successfully (${exitQuantity} shares)'),
-        //     backgroundColor: Colors.green.shade600,
-        //     behavior: SnackBarBehavior.floating,
-        //   ),
-        // );
+      if (!mounted) return;
+      HapticFeedback.mediumImpact();
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '${stockName} position exited successfully (${exitQuantity} shares)',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
+      final name = jtDisplaySymbol(stockName);
+      final message =
+          'Done! Closing your $name trade ($exitQuantity ${exitQuantity == 1 ? 'share' : 'shares'}). '
+          'It will appear under Closed trades shortly.';
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_rounded,
+                  color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  style: GoogleFonts.inter(
+                      color: Colors.white, fontWeight: FontWeight.w600),
                 ),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            duration: Duration(milliseconds: 1500),
-            behavior: SnackBarBehavior.floating,
-            margin: EdgeInsets.only(bottom: 70), // Add bottom margin
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
+              ),
+            ],
           ),
-        );
+          backgroundColor: JT.profit,
+          duration: const Duration(milliseconds: 2800),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+      );
 
-        final int uniqueId =
-            DateTime.now().millisecondsSinceEpoch.remainder(100000);
+      NotificationService().showNotificationBasic(
+        id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
+        title: 'Closing your trade',
+        body: '$name — $exitQuantity '
+            '${exitQuantity == 1 ? 'share' : 'shares'} close request sent.',
+      );
 
-        NotificationService().showNotificationBasic(
-          id: uniqueId,
-          title: "Position Exited",
-          body:
-              '${stockName} position exited successfully (${exitQuantity} shares)',
-        );
-
-        Navigator.of(context).pop(true); // Return true to indicate success
-      }
+      Navigator.of(context).pop(true);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: ${e.toString()}'),
-            backgroundColor: Colors.red.shade600,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    } finally {
+      debugPrint('Exit position error: $e');
       if (mounted) {
         setState(() {
-          _isLoading = false;
+          _error = 'We couldn\'t send your request. Please check your '
+              'internet connection and try again.';
         });
       }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
     }
   }
 
+  // ── UI ─────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
+    final isShort = widget.isshort;
+    final name = jtDisplaySymbol(_h.symbol);
+    final qtyLabel = _qtyOk
+        ? '${isShort ? 'Buy back' : 'Sell'} $_qty ${_qty == 1 ? 'share' : 'shares'}'
+        : 'Close trade';
 
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(24),
-          topRight: Radius.circular(24),
-        ),
+    return JtSheet(
+      title: 'Close this trade',
+      subtitle: isShort
+          ? 'You\'ll buy back the shares you sold earlier.'
+          : 'You\'ll sell the shares you bought earlier.',
+      trailing: JtButton(
+        label: 'Edit',
+        icon: Icons.edit_outlined,
+        height: 32,
+        onTap: _submitting ? null : _editTrade,
       ),
-      child: Column(
+      footer: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Handle Bar
-          Container(
-            margin: const EdgeInsets.only(top: 12),
-            width: 48,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade400,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-
-          // Header
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Position',
-                  style: GoogleFonts.inter(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: theme.textTheme.titleLarge?.color,
-                  ),
-                ),
-                Row(
-                  children: [
-                    // Edit Holdings Button - Placed intuitively in header
-                    Container(
-                      margin: const EdgeInsets.only(right: 8),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: _editBasket,
-                          borderRadius: BorderRadius.circular(20),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.blue.shade50,
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: Colors.blue.shade200,
-                                width: 1,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.edit,
-                                  size: 16,
-                                  color: Colors.blue.shade600,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'Edit Basket',
-                                  style: GoogleFonts.inter(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.blue.shade600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: _error == null
+                ? const SizedBox(width: double.infinity)
+                : Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: JT.tint(context, JT.loss, 0.10),
+                        borderRadius: BorderRadius.circular(10),
                       ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: Icon(
-                        Icons.close,
-                        color: theme.textTheme.titleMedium?.color,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          // Stock Info Card
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 20),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: isDark ? Colors.grey.shade900 : Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
-              ),
-            ),
-            child: Row(
-              children: [
-                // Stock Icon
-                Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: CachedNetworkImage(
-                      height: 48,
-                      width: 48,
-                      imageUrl:
-                          "${Constants.OptionXiS3Loc}${_getDisplaySymbol(widget.userholding.symbol)}.png",
-                      fit: BoxFit.cover,
-                      placeholder: (context, url) => Image.asset(
-                        'assets/images/stockdefault.png',
-                        fit: BoxFit.cover,
-                      ),
-                      errorWidget: (context, url, error) => Image.asset(
-                        'assets/images/stockdefault.png',
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-
-                // Stock Details
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _getDisplaySymbol(widget.userholding.symbol),
-                        style: GoogleFonts.inter(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: theme.textTheme.titleLarge?.color,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Holding: ${widget.userholding.quantity}',
-                            style: GoogleFonts.inter(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: theme.textTheme.titleMedium?.color,
-                            ),
+                          const Icon(Icons.error_outline_rounded,
+                              size: 16, color: JT.loss),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(_error!,
+                                style: JT.caption(context,
+                                    size: 12, color: JT.loss)),
                           ),
-                          const SizedBox(width: 16),
-                          // Text(
-                          //   'Avg: ₹${widget.userholding.averagePrice.toStringAsFixed(2)}',
-                          //   style: GoogleFonts.inter(
-                          //     fontSize: 14,
-                          //     fontWeight: FontWeight.w500,
-                          //     color: theme.textTheme.titleMedium?.color,
-                          //   ),
-                          // ),
                         ],
                       ),
-                    ],
+                    ),
+                  ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: JtButton(
+                  label: 'Not now',
+                  height: 50,
+                  onTap: _submitting ? null : () => Navigator.of(context).pop(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 3,
+                child: JtButton(
+                  label: qtyLabel,
+                  icon: Icons.check_rounded,
+                  filled: true,
+                  expand: true,
+                  height: 50,
+                  loading: _submitting,
+                  onTap: _submitting ? null : _submit,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _StockSummary(
+            holding: _h,
+            name: name,
+            isShort: isShort,
+            ltp: widget.currentLtp,
+          ),
+          const SizedBox(height: 20),
+
+          // ── How many shares ──
+          _FieldLabel(
+            'How many shares?',
+            hint: 'You hold ${_h.quantity}',
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _StepperButton(
+                icon: Icons.remove_rounded,
+                onTap: _qty > 1 ? () => _setQty(_qty - 1) : null,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: _qtyCtrl,
+                  textAlign: TextAlign.center,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    TextInputFormatter.withFunction((oldV, newV) {
+                      if (newV.text.isEmpty) return newV;
+                      final q = int.tryParse(newV.text) ?? 0;
+                      return q > _h.quantity ? oldV : newV;
+                    }),
+                  ],
+                  style: JT.number(context, size: 20),
+                  decoration: _inputDecoration(context),
+                ),
+              ),
+              const SizedBox(width: 10),
+              _StepperButton(
+                icon: Icons.add_rounded,
+                onTap: _qty < _h.quantity ? () => _setQty(_qty + 1) : null,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              for (final p in const [25, 50, 75, 100]) ...[
+                Expanded(
+                  child: _QuickChip(
+                    label: p == 100 ? 'All' : '$p%',
+                    selected: _qty == _qtyForPercent(p),
+                    onTap: () => _setQty(_qtyForPercent(p)),
                   ),
                 ),
-
-                // Current LTP
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      'LTP',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: theme.textTheme.titleMedium?.color,
-                      ),
-                    ),
-                    Text(
-                      '₹${widget.currentLtp.toStringAsFixed(2)}',
-                      style: GoogleFonts.inter(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        color: theme.textTheme.titleLarge?.color,
-                      ),
-                    ),
-                  ],
-                ),
+                if (p != 100) const SizedBox(width: 8),
               ],
-            ),
+            ],
           ),
 
-          // Form
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Quantity and Exit Price Row
-                  Row(
-                    children: [
-                      // Quantity
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Quantity',
-                              style: GoogleFonts.inter(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: theme.textTheme.titleLarge?.color,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _quantityController,
-                              keyboardType: TextInputType.number,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.digitsOnly,
-                                TextInputFormatter.withFunction(
-                                    (oldValue, newValue) {
-                                  if (newValue.text.isEmpty) return newValue;
-                                  final qty = int.tryParse(newValue.text) ?? 0;
-                                  if (qty > 10000) return oldValue;
-                                  return newValue;
-                                }),
-                              ],
-                              decoration: InputDecoration(
-                                hintText: 'Enter quantity',
-                                filled: true,
-                                fillColor: isDark
-                                    ? Colors.grey.shade900
-                                    : Colors.grey.shade50,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: isDark
-                                        ? Colors.grey.shade700
-                                        : Colors.grey.shade300,
-                                  ),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: Colors.blue.shade600,
-                                    width: 2,
-                                  ),
-                                ),
-                              ),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Enter quantity';
-                                }
-                                final quantity = int.tryParse(value);
-                                if (quantity == null || quantity <= 0) {
-                                  return 'Invalid quantity';
-                                }
-                                if (quantity > widget.userholding.quantity) {
-                                  return 'Exceeds holding';
-                                }
-                                return null;
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
+          const SizedBox(height: 22),
 
-                      const SizedBox(width: 16),
-
-                      // Exit Price
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Exit Price',
-                              style: GoogleFonts.inter(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: theme.textTheme.titleLarge?.color,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _exitPriceController,
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                      decimal: true),
-                              decoration: InputDecoration(
-                                prefixText: '₹ ',
-                                hintText: 'Enter price',
-                                filled: true,
-                                fillColor: isDark
-                                    ? Colors.grey.shade900
-                                    : Colors.grey.shade50,
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: isDark
-                                        ? Colors.grey.shade700
-                                        : Colors.grey.shade300,
-                                  ),
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  borderSide: BorderSide(
-                                    color: Colors.blue.shade600,
-                                    width: 2,
-                                  ),
-                                ),
-                              ),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return 'Enter price';
-                                }
-                                if (double.tryParse(value) == null) {
-                                  return 'Invalid price';
-                                }
-                                return null;
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // Date & Time Row
-                  Row(
-                    children: [
-                      // Date
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Exit Date',
-                              style: GoogleFonts.inter(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: theme.textTheme.titleLarge?.color,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            InkWell(
-                              onTap: _selectDate,
-                              child: Container(
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: isDark
-                                      ? Colors.grey.shade900
-                                      : Colors.grey.shade50,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: isDark
-                                        ? Colors.grey.shade700
-                                        : Colors.grey.shade300,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.calendar_today,
-                                      size: 20,
-                                      color: theme.textTheme.titleMedium?.color,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Text(
-                                      '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
-                                      style: GoogleFonts.inter(
-                                        fontSize: 14,
-                                        color:
-                                            theme.textTheme.titleMedium?.color,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(width: 16),
-
-                      // Time
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Exit Time',
-                              style: GoogleFonts.inter(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: theme.textTheme.titleLarge?.color,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            InkWell(
-                              onTap: _selectTime,
-                              child: Container(
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: isDark
-                                      ? Colors.grey.shade900
-                                      : Colors.grey.shade50,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: isDark
-                                        ? Colors.grey.shade700
-                                        : Colors.grey.shade300,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      Icons.access_time,
-                                      size: 20,
-                                      color: theme.textTheme.titleMedium?.color,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Text(
-                                      _selectedTime.format(context),
-                                      style: GoogleFonts.inter(
-                                        fontSize: 14,
-                                        color:
-                                            theme.textTheme.titleMedium?.color,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(height: 32),
-
-                  // Action Buttons
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: _isLoading
-                              ? null
-                              : () => Navigator.of(context).pop(),
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            side: BorderSide(
-                              color: theme.textTheme.titleMedium?.color ??
-                                  Colors.grey,
-                            ),
-                          ),
-                          child: Text(
-                            'Cancel',
-                            style: GoogleFonts.inter(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: _isLoading ? null : _submitExit,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.shade600,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            elevation: 0,
-                          ),
-                          child: _isLoading
-                              ? const SizedBox(
-                                  height: 20,
-                                  width: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                        Colors.white),
-                                  ),
-                                )
-                              : Text(
-                                  'Exit Position',
-                                  style: GoogleFonts.inter(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+          // ── Price ──
+          _FieldLabel(
+            isShort ? 'Price you bought back at' : 'Price you sold at',
+            hint: _hasLivePrice ? 'Filled with today\'s market price' : null,
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _priceCtrl,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+            ],
+            style: JT.number(context, size: 20),
+            decoration: _inputDecoration(context).copyWith(
+              prefixText: '₹ ',
+              prefixStyle:
+                  JT.number(context, size: 20, color: JT.text2(context)),
+              hintText: 'Enter price',
+            ),
+          ),
+          if (!_hasLivePrice) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Live price isn\'t available right now, so please enter the '
+              'price you closed at.',
+              style: JT.caption(context, size: 12, color: JT.amber),
+            ),
+          ] else if (_price == null ||
+              (_price! - double.parse(widget.currentLtp.toStringAsFixed(2)))
+                      .abs() >
+                  0.001) ...[
+            const SizedBox(height: 6),
+            GestureDetector(
+              onTap: () =>
+                  _priceCtrl.text = widget.currentLtp.toStringAsFixed(2),
+              child: Text(
+                'Use market price (${jtPrice(widget.currentLtp)})',
+                style: JT.caption(context, size: 12, color: JT.blue),
               ),
             ),
+          ],
+
+          const SizedBox(height: 22),
+
+          // ── When ──
+          const _FieldLabel('When did you close it?'),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _QuickChip(
+                  label: 'Right now',
+                  selected: _useNow,
+                  onTap: () => setState(() => _useNow = true),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _QuickChip(
+                  label: 'Earlier — pick time',
+                  selected: !_useNow,
+                  onTap: () => setState(() {
+                    _useNow = false;
+                    _picked = DateTime.now();
+                  }),
+                ),
+              ),
+            ],
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: _useNow
+                ? const SizedBox(width: double.infinity)
+                : Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _PickerTile(
+                            icon: Icons.calendar_today_rounded,
+                            label:
+                                DateFormat('EEE, d MMM yyyy').format(_picked),
+                            onTap: _pickDate,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _PickerTile(
+                            icon: Icons.access_time_rounded,
+                            label: DateFormat('h:mm a').format(_picked),
+                            onTap: _pickTime,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
           ),
 
-          // Bottom padding for safe area
-          SizedBox(height: MediaQuery.of(context).padding.bottom),
+          const SizedBox(height: 22),
+
+          // ── What happens ──
+          _OutcomePreview(
+            holding: _h,
+            isShort: isShort,
+            qty: _qtyOk ? _qty : null,
+            price: _price,
+          ),
         ],
       ),
     );
   }
+
+  int _qtyForPercent(int p) =>
+      (_h.quantity * p / 100).round().clamp(1, _h.quantity);
+
+  InputDecoration _inputDecoration(BuildContext context) => InputDecoration(
+        filled: true,
+        fillColor: JT.surface(context),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: JT.border(context)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: JT.border(context)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: JT.blue, width: 2),
+        ),
+      );
+}
+
+// ─────────────────────────────────────────────
+//  Pieces
+// ─────────────────────────────────────────────
+
+class _StockSummary extends StatelessWidget {
+  final BasketUserHolding holding;
+  final String name;
+  final bool isShort;
+  final double ltp;
+  const _StockSummary({
+    required this.holding,
+    required this.name,
+    required this.isShort,
+    required this.ltp,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: JT.card(context),
+      child: Row(
+        children: [
+          JtLogo(
+            symbolKey: jtLogoKey(holding.symbol),
+            accent: isShort ? JT.amber : JT.blue,
+            size: 48,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: JT.heading(context, size: 17)),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    JtDirectionChip(isShort: isShort),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        '${holding.quantity} ${holding.quantity == 1 ? 'share' : 'shares'}',
+                        overflow: TextOverflow.ellipsis,
+                        style: JT.caption(context),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${isShort ? 'Sold' : 'Bought'} at ${jtPrice(holding.averagePrice)}',
+                  style: JT.caption(context, size: 12),
+                ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text('Price now', style: JT.caption(context, size: 11)),
+              const SizedBox(height: 2),
+              Text(
+                ltp > 0 ? jtPrice(ltp) : '—',
+                style: JT.number(context, size: 17),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OutcomePreview extends StatelessWidget {
+  final BasketUserHolding holding;
+  final bool isShort;
+  final int? qty;
+  final double? price;
+  const _OutcomePreview({
+    required this.holding,
+    required this.isShort,
+    required this.qty,
+    required this.price,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = qty != null && price != null;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      switchInCurve: Curves.easeOut,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child:
+            SizeTransition(sizeFactor: anim, axisAlignment: -1, child: child),
+      ),
+      child: ready ? _body(context) : const SizedBox(width: double.infinity),
+    );
+  }
+
+  Widget _body(BuildContext context) {
+    final dir = isShort ? -1 : 1;
+    final avg = holding.averagePrice;
+    final pnl = (price! - avg) * qty! * dir;
+    final pct = avg > 0 ? (price! - avg) / avg * 100 * dir : 0.0;
+    final color = JT.pnl(pnl);
+    final remaining = holding.quantity - qty!;
+    final headline = pnl == 0
+        ? 'You\'ll break even'
+        : 'If you close at this price, you\'ll ${pnl > 0 ? 'make' : 'lose'}';
+
+    return AnimatedContainer(
+      key: const ValueKey('preview'),
+      duration: const Duration(milliseconds: 250),
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: JT.tint(context, color, 0.09),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            headline,
+            style: JT.caption(context, size: 12, color: color),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              JtCount(
+                value: pnl,
+                duration: const Duration(milliseconds: 350),
+                format: (v) => jtMoney(v.abs()),
+                style: JT.number(context, size: 28, color: color),
+              ),
+              const SizedBox(width: 10),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: JtPctTag(pct: pct),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(
+                remaining == 0
+                    ? Icons.task_alt_rounded
+                    : Icons.pie_chart_outline_rounded,
+                size: 15,
+                color: JT.text2(context),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  remaining == 0
+                      ? 'This closes the whole trade.'
+                      : 'You\'ll still have $remaining ${remaining == 1 ? 'share' : 'shares'} open.',
+                  style: JT.caption(context, size: 12),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FieldLabel extends StatelessWidget {
+  final String text;
+  final String? hint;
+  const _FieldLabel(this.text, {this.hint});
+
+  @override
+  Widget build(BuildContext context) => Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(text, style: JT.heading(context, size: 15)),
+          if (hint != null) ...[
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(hint!,
+                  overflow: TextOverflow.ellipsis,
+                  style: JT.caption(context, size: 12)),
+            ),
+          ],
+        ],
+      );
+}
+
+class _StepperButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+  const _StepperButton({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => AnimatedOpacity(
+        duration: const Duration(milliseconds: 150),
+        opacity: onTap == null ? 0.4 : 1,
+        child: JtPressable(
+          onTap: onTap,
+          pressedScale: 0.92,
+          child: Container(
+            width: 48,
+            height: 52,
+            decoration: BoxDecoration(
+              color: JT.surface(context),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: JT.border(context)),
+            ),
+            child: Icon(icon, color: JT.text(context)),
+          ),
+        ),
+      );
+}
+
+class _QuickChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _QuickChip(
+      {required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => JtPressable(
+        onTap: onTap,
+        pressedScale: 0.95,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          height: 40,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          decoration: BoxDecoration(
+            color: selected ? JT.blue : JT.surface(context),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: selected ? JT.blue : JT.border(context), width: 1),
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+              color: selected ? Colors.white : JT.text2(context),
+            ),
+          ),
+        ),
+      );
+}
+
+class _PickerTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _PickerTile(
+      {required this.icon, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => JtPressable(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          decoration: BoxDecoration(
+            color: JT.surface(context),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: JT.border(context)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: JT.blue),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: JT.body(context, size: 13, weight: FontWeight.w600)),
+              ),
+            ],
+          ),
+        ),
+      );
 }

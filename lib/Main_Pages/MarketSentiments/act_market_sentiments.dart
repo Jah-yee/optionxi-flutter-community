@@ -921,35 +921,40 @@ class _MarketSentimentPageState extends State<MarketSentimentPage> {
                     onChart: () => _openChart(allowPop: true),
                   ),
                 ),
-                if (!_loading && _error == null && _items.isNotEmpty)
+                // ── Loading: skeleton with static + dynamic parts ──
+                if (_loading)
+                  const SliverToBoxAdapter(child: _LoadingSkeleton())
+                else ...[
+                  if (_error == null && _items.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _Hero(
+                        o: _items.first,
+                        onChart: () => _openChart(date: _items.first.ts),
+                        onGuide: () => showSentimentGuide(context),
+                      ),
+                    ),
                   SliverToBoxAdapter(
-                    child: _Hero(
-                      o: _items.first,
-                      onChart: () => _openChart(date: _items.first.ts),
+                    child: _Segmented(
+                      value: _view,
+                      onChanged: (v) => _apply(() => _view = v),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: _Filters(
+                      date: _date,
+                      strong: _strong,
+                      firstEntry: _firstEntry,
+                      hasFilters: _hasFilters,
+                      onDate: _pickDate,
+                      onDateClear: () => _apply(() => _date = null),
+                      onStrong: (v) => _apply(() => _strong = v),
+                      onFirstEntry: (v) => _apply(() => _firstEntry = v),
+                      onReset: _resetFilters,
                       onGuide: () => showSentimentGuide(context),
                     ),
                   ),
-                SliverToBoxAdapter(
-                  child: _Segmented(
-                    value: _view,
-                    onChanged: (v) => _apply(() => _view = v),
-                  ),
-                ),
-                SliverToBoxAdapter(
-                  child: _Filters(
-                    date: _date,
-                    strong: _strong,
-                    firstEntry: _firstEntry,
-                    hasFilters: _hasFilters,
-                    onDate: _pickDate,
-                    onDateClear: () => _apply(() => _date = null),
-                    onStrong: (v) => _apply(() => _strong = v),
-                    onFirstEntry: (v) => _apply(() => _firstEntry = v),
-                    onReset: _resetFilters,
-                    onGuide: () => showSentimentGuide(context),
-                  ),
-                ),
-                ..._body(),
+                  ..._body(),
+                ],
                 const SliverToBoxAdapter(child: SizedBox(height: 24)),
               ],
             ),
@@ -960,17 +965,6 @@ class _MarketSentimentPageState extends State<MarketSentimentPage> {
   }
 
   List<Widget> _body() {
-    if (_loading) {
-      return [
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-          sliver: SliverList(
-            delegate: SliverChildBuilderDelegate((_, __) => const _Skeleton(),
-                childCount: 4),
-          ),
-        ),
-      ];
-    }
     if (_error != null) {
       return [
         SliverToBoxAdapter(
@@ -1553,6 +1547,271 @@ class _SignalCard extends StatelessWidget {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Loading skeleton – static shell + dynamic shimmer blocks
+// ═════════════════════════════════════════════════════════════════════════════
+class _LoadingSkeleton extends StatefulWidget {
+  const _LoadingSkeleton();
+  @override
+  State<_LoadingSkeleton> createState() => _LoadingSkeletonState();
+}
+
+class _LoadingSkeletonState extends State<_LoadingSkeleton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 900))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  Widget _b(BuildContext ctx, double w, double h, {double r = 6}) => Container(
+        width: w,
+        height: h,
+        decoration: BoxDecoration(
+          color: ctx.isDark
+              ? Colors.white.withValues(alpha: 0.07)
+              : Colors.black.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(r),
+        ),
+      );
+
+  /// Hero card placeholder – static (not shimmering) with "Checking…" label.
+  Widget _heroSkeleton(BuildContext ctx) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: ctx.sxSurface,
+          borderRadius: BorderRadius.circular(SX.rLG + 4),
+          border: Border.all(color: ctx.sxBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // "Checking latest read" label
+            Row(
+              children: [
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(SX.accent),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Checking latest read…',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: ctx.sxTextS,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _b(ctx, 28, 28, r: 8),
+                const SizedBox(width: 8),
+                _b(ctx, 150, 22),
+                const Spacer(),
+                _b(ctx, 68, 68, r: 34),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _b(ctx, double.infinity, 14),
+            const SizedBox(height: 6),
+            _b(ctx, 200, 14),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                _b(ctx, 160, 36, r: 14),
+                const SizedBox(width: 6),
+                _b(ctx, 100, 36, r: 14),
+              ],
+            ),
+          ],
+        ),
+      );
+
+  /// Static part – always shown, doesn't animate (e.g., filter chips, section titles)
+  Widget _staticShell(BuildContext ctx) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Static segmented control placeholder (mimics the real one)
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: ctx.sxSurface,
+              borderRadius: BorderRadius.circular(SX.rMD + 2),
+              border: Border.all(color: ctx.sxBorder),
+            ),
+            child: Row(children: [
+              for (var i = 0; i < 3; i++)
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            i == 0
+                                ? Icons.apps_rounded
+                                : i == 1
+                                    ? Icons.trending_up_rounded
+                                    : Icons.trending_down_rounded,
+                            size: 15,
+                            color: ctx.sxTextS,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            i == 0
+                                ? 'All'
+                                : i == 1
+                                    ? 'Going up'
+                                    : 'Going down',
+                            style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                                color: ctx.sxTextS),
+                          ),
+                        ]),
+                  ),
+                ),
+            ]),
+          ),
+          // Static filter pills
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: Wrap(spacing: 8, runSpacing: 8, children: [
+              _StaticPill(
+                  icon: Icons.calendar_today_rounded, label: 'Any date'),
+              _StaticPill(icon: Icons.bolt_rounded, label: 'High confidence'),
+              _StaticPill(icon: Icons.flag_rounded, label: 'Fresh moves'),
+            ]),
+          ),
+        ],
+      );
+
+  /// Dynamic part – animated shimmer blocks (signal cards)
+  Widget _dynamicCards(BuildContext ctx) {
+    return Column(
+      children: [
+        for (var i = 0; i < 4; i++)
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: ctx.sxSurface,
+              borderRadius: BorderRadius.circular(SX.rLG),
+              border: Border.all(color: ctx.sxBorder),
+            ),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                _b(ctx, 42, 42, r: 14),
+                const SizedBox(width: 12),
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _b(ctx, 140, 14),
+                  const SizedBox(height: 6),
+                  _b(ctx, 90, 10),
+                ]),
+                const Spacer(),
+                _b(ctx, 48, 30),
+              ]),
+              const SizedBox(height: 14),
+              _b(ctx, double.infinity, 12),
+              const SizedBox(height: 10),
+              _b(ctx, double.infinity, 6),
+              const SizedBox(height: 12),
+              Row(children: [
+                _b(ctx, 90, 22, r: 8),
+                const SizedBox(width: 8),
+                _b(ctx, 110, 22, r: 8),
+              ]),
+            ]),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Hero skeleton with "Checking latest read…" label (static, no shimmer)
+          _heroSkeleton(context),
+          // Static shell always visible
+          _staticShell(context),
+          const SizedBox(height: 6),
+          // Dynamic shimmer content (signal cards)
+          FadeTransition(
+            opacity: Tween<double>(begin: 0.4, end: 1).animate(_c),
+            child: _dynamicCards(context),
+          ),
+          // Static skeleton for pagination (always looks the same)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: context.sxSurface,
+                borderRadius: BorderRadius.circular(SX.rMD),
+                border: Border.all(color: context.sxBorder),
+              ),
+              child: Row(children: [
+                _b(context, 20, 20, r: 6),
+                Expanded(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    _b(context, 80, 13),
+                    const SizedBox(height: 4),
+                    _b(context, 100, 11),
+                  ]),
+                ),
+                _b(context, 20, 20, r: 6),
+              ]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StaticPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _StaticPill({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: context.sxSurface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: context.sxBorder),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 14, color: context.sxTextS),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                  color: context.sxTextS)),
+        ]),
+      );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Pagination
 // ═════════════════════════════════════════════════════════════════════════════
 class _Pagination extends StatelessWidget {
@@ -1614,77 +1873,6 @@ class _PageBtn extends StatelessWidget {
             ),
             child: Icon(icon, size: 20, color: context.sxTextP),
           ),
-        ),
-      );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Skeleton
-// ═════════════════════════════════════════════════════════════════════════════
-class _Skeleton extends StatefulWidget {
-  const _Skeleton();
-  @override
-  State<_Skeleton> createState() => _SkeletonState();
-}
-
-class _SkeletonState extends State<_Skeleton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 900))
-    ..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  Widget _b(BuildContext ctx, double w, double h, {double r = 6}) => Container(
-        width: w,
-        height: h,
-        decoration: BoxDecoration(
-          color: ctx.isDark
-              ? Colors.white.withValues(alpha: 0.07)
-              : Colors.black.withValues(alpha: 0.07),
-          borderRadius: BorderRadius.circular(r),
-        ),
-      );
-
-  @override
-  Widget build(BuildContext context) => FadeTransition(
-        opacity: Tween<double>(begin: 0.4, end: 1).animate(_c),
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: context.sxSurface,
-            borderRadius: BorderRadius.circular(SX.rLG),
-            border: Border.all(color: context.sxBorder),
-          ),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              _b(context, 42, 42, r: 14),
-              const SizedBox(width: 12),
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _b(context, 140, 14),
-                const SizedBox(height: 6),
-                _b(context, 90, 10),
-              ]),
-              const Spacer(),
-              _b(context, 48, 30),
-            ]),
-            const SizedBox(height: 14),
-            _b(context, double.infinity, 12),
-            const SizedBox(height: 10),
-            _b(context, double.infinity, 6),
-            const SizedBox(height: 12),
-            Row(children: [
-              _b(context, 90, 22, r: 8),
-              const SizedBox(width: 8),
-              _b(context, 110, 22, r: 8),
-            ]),
-          ]),
         ),
       );
 }

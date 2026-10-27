@@ -1,1110 +1,910 @@
-// Market-phase rules (IST, Asia/Kolkata = UTC+5:30), every day:
-//   09:15 – 15:30  -> LIVE
-//   16:00 – 22:15  -> LIVE
-//   everything else -> CLOSED
-//
-// Both live windows show a "Previous day's data · For educational purposes
-// only" disclaimer, since prev_nifty_indices holds a prior session's snapshot
-// rather than a true live feed.
-//
-// For "Enable Realtime" on prev_nifty_indices in Supabase dashboard,
-// run: alter publication supabase_realtime add table public.prev_nifty_indices;
-
-import 'dart:async';
-
+import 'dart:math' as math;
+import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
-// ============================================================================
-// COLOR TOKENS — dark / light aware
-// ============================================================================
-
-class PTColors {
-  final Color bg;
-  final Color surface;
-  final Color surface2;
-  final Color border;
-  final Color text;
-  final Color muted;
-  final Color green;
-  final Color red;
-  final Color amber;
-  final Color blue;
-  final Color grey;
-
-  const PTColors._({
-    required this.bg,
-    required this.surface,
-    required this.surface2,
-    required this.border,
-    required this.text,
-    required this.muted,
-    required this.green,
-    required this.red,
-    required this.amber,
-    required this.blue,
-    required this.grey,
+/// Fixed-height promo card. Follows Theme brightness (light / dark).
+/// Layout: header text -> demo container (non-interactive) -> CTA block.
+///
+/// const VirtualTradingCard()
+/// VirtualTradingCard(onTap: () => Get.to(() => const PracticeTradingPage()))
+class VirtualTradingCard extends StatefulWidget {
+  const VirtualTradingCard({
+    super.key,
+    this.onTap,
+    this.height = 420,
+    this.margin = const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
   });
 
-  static const dark = PTColors._(
-    bg: Color(0xFF0B0F14),
-    surface: Color(0xFF131920),
-    surface2: Color(0xFF181F28),
-    border: Color(0xFF232B36),
-    text: Color(0xFFEDEFF2),
-    muted: Color(0xFF8B96A5),
-    green: Color(0xFF00D68F),
-    red: Color(0xFFFF4757),
-    amber: Color(0xFFF5C544),
-    blue: Color(0xFF4EA8FF),
-    grey: Color(0xFF5B6472),
-  );
-
-  static const light = PTColors._(
-    bg: Color(0xFFF5F6F8),
-    surface: Color(0xFFFFFFFF),
-    surface2: Color(0xFFF0F2F5),
-    border: Color(0xFFE3E6EB),
-    text: Color(0xFF14171C),
-    muted: Color(0xFF667085),
-    green: Color(0xFF0C9463),
-    red: Color(0xFFDD3648),
-    amber: Color(0xFFAD7A0C),
-    blue: Color(0xFF2A66D9),
-    grey: Color(0xFF8A93A3),
-  );
-
-  static PTColors of(BuildContext context) {
-    return Theme.of(context).brightness == Brightness.dark ? dark : light;
-  }
-}
-
-// ============================================================================
-// MARKET PHASE — IST-based session logic
-// ============================================================================
-
-enum MarketPhase { session1, session2, closed }
-
-class MarketStatus {
-  static const int _session1OpenMin = 9 * 60 + 15; // 09:15
-  static const int _session1CloseMin = 15 * 60 + 30; // 15:30
-  static const int _session2OpenMin = 16 * 60; // 16:00
-  static const int _session2CloseMin = 22 * 60 + 15; // 22:15
-
-  /// Current IST time, derived from device UTC clock (no dependency needed).
-  static DateTime nowIst() {
-    final utcNow = DateTime.now().toUtc();
-    return utcNow.add(const Duration(hours: 5, minutes: 30));
-  }
-
-  /// Live windows run every day (no weekend exception):
-  ///   09:15 – 15:30  and  16:00 – 22:15  IST.
-  static MarketPhase currentPhase() {
-    final ist = nowIst();
-    final minutes = ist.hour * 60 + ist.minute;
-    if (minutes >= _session1OpenMin && minutes <= _session1CloseMin) {
-      return MarketPhase.session1;
-    }
-    if (minutes >= _session2OpenMin && minutes <= _session2CloseMin) {
-      return MarketPhase.session2;
-    }
-    return MarketPhase.closed;
-  }
-
-  static bool isLive(MarketPhase phase) => phase != MarketPhase.closed;
-
-  static ({String badge, String headline, String subtitle, String? note}) copy(
-      MarketPhase phase) {
-    switch (phase) {
-      case MarketPhase.session1:
-      case MarketPhase.session2:
-        return (
-          badge: 'LIVE',
-          headline: 'Trade the real market.\nZero risk.',
-          subtitle: 'Price update are delayed by 24 hours',
-          note: "Previous day's data · For educational purposes only",
-        );
-      case MarketPhase.closed:
-        return (
-          badge: 'CLOSED',
-          headline: 'Market is closed.\nPractice anytime.',
-          subtitle: 'Live session resumes at 9:15 AM IST',
-          note: null,
-        );
-    }
-  }
-}
-
-// ============================================================================
-// MODELS
-// ============================================================================
-
-class IndexQuote {
-  final String symbol;
-  final double ltp;
-  final double open;
-  final double prevClose;
-  final double high;
-  final double low;
-  final int volume;
-  final double pChange;
-
-  const IndexQuote({
-    required this.symbol,
-    required this.ltp,
-    required this.open,
-    required this.prevClose,
-    required this.high,
-    required this.low,
-    required this.volume,
-    required this.pChange,
-  });
-
-  bool get isUp => ltp >= prevClose;
-
-  factory IndexQuote.fromMap(Map<String, dynamic> map) {
-    return IndexQuote(
-      symbol: map['symbol'] as String,
-      ltp: _num(map['ltp']),
-      open: _num(map['o']),
-      prevClose: _num(map['pc']),
-      high: _num(map['h']),
-      low: _num(map['l']),
-      volume: (map['v'] as num?)?.toInt() ?? 0,
-      pChange: _num(map['pcnt']),
-    );
-  }
-
-  static double _num(Object? v) {
-    if (v == null) return 0;
-    if (v is num) return v.toDouble();
-    return double.tryParse(v.toString()) ?? 0;
-  }
-}
-
-class TraderInfo {
-  final String suid;
-  final String? displayName;
-  final String? imgUrl;
-
-  const TraderInfo({required this.suid, this.displayName, this.imgUrl});
-
-  factory TraderInfo.fromMap(Map<String, dynamic> map) {
-    return TraderInfo(
-      suid: map['suid'] as String,
-      displayName: map['displayname'] as String?,
-      imgUrl: map['imgurl'] as String?,
-    );
-  }
-
-  String get initial {
-    final n = (displayName ?? '').trim();
-    return n.isEmpty ? '?' : n[0].toUpperCase();
-  }
-}
-
-// ============================================================================
-// NUMBER FORMATTING — Indian grouping (no intl dependency required)
-// ============================================================================
-
-String formatIndianNumber(double value, {int decimals = 2}) {
-  final isNeg = value < 0;
-  final fixed = value.abs().toStringAsFixed(decimals);
-  final parts = fixed.split('.');
-  final intPart = parts[0];
-  final decPart = parts.length > 1 ? parts[1] : '';
-
-  String grouped;
-  if (intPart.length <= 3) {
-    grouped = intPart;
-  } else {
-    final last3 = intPart.substring(intPart.length - 3);
-    final rest = intPart.substring(0, intPart.length - 3);
-    grouped = '${_indianGroup(rest)},$last3';
-  }
-  final out = '$grouped${decPart.isNotEmpty ? '.$decPart' : ''}';
-  return isNeg ? '-$out' : out;
-}
-
-String _indianGroup(String rest) {
-  final chunks = <String>[];
-  var s = rest;
-  while (s.length > 2) {
-    chunks.insert(0, s.substring(s.length - 2));
-    s = s.substring(0, s.length - 2);
-  }
-  chunks.insert(0, s);
-  return chunks.join(',');
-}
-
-// ============================================================================
-// PRACTICE TRADE CARD
-// ============================================================================
-
-class PracticeTradeCard extends StatefulWidget {
   final VoidCallback? onTap;
-
-  const PracticeTradeCard({super.key, this.onTap});
+  final double height;
+  final EdgeInsets margin;
 
   @override
-  State<PracticeTradeCard> createState() => _PracticeTradeCardState();
+  State<VirtualTradingCard> createState() => _VirtualTradingCardState();
 }
 
-class _PracticeTradeCardState extends State<PracticeTradeCard> {
-  static const _watchSymbols = ['NIFTY50', 'NIFTYBANK'];
+/// Palette. Flat surfaces, one brand blue, green/red only for market meaning.
+class _C {
+  const _C({
+    required this.dark,
+    required this.card,
+    required this.border,
+    required this.shadow,
+    required this.stage,
+    required this.stageBorder,
+    required this.text,
+    required this.sub,
+    required this.track,
+    required this.accent,
+    required this.up,
+    required this.down,
+    required this.amber,
+  });
 
-  final SupabaseClient _client = Supabase.instance.client;
-  RealtimeChannel? _channel;
-  Timer? _phaseTimer;
+  final bool dark;
+  final Color card, border, shadow, stage, stageBorder;
+  final Color text, sub, track;
+  final Color accent, up, down, amber;
 
-  bool _loading = true;
-  String? _error;
+  static const light = _C(
+    dark: false,
+    card: Color(0xFFFFFFFF),
+    border: Color(0xFFE6E9EF),
+    shadow: Color(0x14101828),
+    stage: Color(0xFFF4F6FA),
+    stageBorder: Color(0xFFE9ECF2),
+    text: Color(0xFF0F172A),
+    sub: Color(0xFF64748B),
+    track: Color(0xFFD9DEE7),
+    accent: Color(0xFF2F6BFF),
+    up: Color(0xFF0E9F6E),
+    down: Color(0xFFE5484D),
+    amber: Color(0xFFB45309),
+  );
 
-  Map<String, IndexQuote> _quotes = {};
-  List<TraderInfo> _topTraders = [];
-  int _traderCount = 0;
+  static const darkTheme = _C(
+    dark: true,
+    card: Color(0xFF17191E),
+    border: Color(0xFF262A32),
+    shadow: Color(0x66000000),
+    stage: Color(0xFF1F2229),
+    stageBorder: Color(0xFF2A2E37),
+    text: Color(0xFFF3F4F6),
+    sub: Color(0xFF9AA3B2),
+    track: Color(0xFF343842),
+    accent: Color(0xFF4C82FF),
+    up: Color(0xFF2DD4A0),
+    down: Color(0xFFFF6B6B),
+    amber: Color(0xFFFBBF24),
+  );
 
-  MarketPhase _phase = MarketStatus.currentPhase();
+  static _C of(BuildContext ctx) =>
+      Theme.of(ctx).brightness == Brightness.dark ? darkTheme : light;
+}
+
+class _VirtualTradingCardState extends State<VirtualTradingCard>
+    with SingleTickerProviderStateMixin {
+  // seconds per phase: trade, pnl, options, rank
+  static const _dur = [4.4, 3.0, 3.2, 3.4];
+  static const _total = 14.0;
+
+  static const _captions = [
+    'Buy with your virtual cash',
+    'Watch your P&L move live',
+    'Practice with the option chain',
+    'Beat others. Climb the leaderboard',
+  ];
+
+  static const _spent = 17096; // 10 x 1709.60
+  static const _cashAfterBuy = 300000 - _spent;
+
+  late final AnimationController _tl;
+  _C c = _C.light;
+  bool _pressed = false;
 
   @override
   void initState() {
     super.initState();
-    _bootstrap();
-    // Re-evaluate market phase every 30s so the badge flips automatically
-    // as the clock crosses session boundaries.
-    _phaseTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      final next = MarketStatus.currentPhase();
-      if (next != _phase && mounted) {
-        setState(() => _phase = next);
-      }
-    });
+    _tl = AnimationController(
+        vsync: this, duration: Duration(milliseconds: (_total * 1000).round()))
+      ..repeat();
   }
 
   @override
   void dispose() {
-    _phaseTimer?.cancel();
-    final ch = _channel;
-    if (ch != null) {
-      _client.removeChannel(ch);
-    }
+    _tl.dispose();
     super.dispose();
   }
 
-  Future<void> _bootstrap() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      await Future.wait([_fetchQuotes(), _fetchTraders()]);
-      _subscribeRealtime();
-      if (mounted) setState(() => _loading = false);
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = "Couldn't load market data. Check your connection.";
-        });
-      }
+  void _go() {
+    HapticFeedback.lightImpact();
+    (widget.onTap ?? () => Get.toNamed('/virtual-trading'))();
+  }
+
+  // ---------- helpers ----------
+  static double _p(double t, double a, double b) =>
+      ((t - a) / (b - a)).clamp(0.0, 1.0);
+
+  static (int, double) _phaseOf(double s) {
+    var acc = 0.0;
+    for (var i = 0; i < _dur.length; i++) {
+      if (s < acc + _dur[i]) return (i, (s - acc) / _dur[i]);
+      acc += _dur[i];
+    }
+    return (_dur.length - 1, 1.0);
+  }
+
+  static String _grp(int v) {
+    final s = v.toString();
+    if (s.length <= 3) return s;
+    final last3 = s.substring(s.length - 3);
+    var rest = s.substring(0, s.length - 3);
+    final parts = <String>[];
+    while (rest.length > 2) {
+      parts.insert(0, rest.substring(rest.length - 2));
+      rest = rest.substring(0, rest.length - 2);
+    }
+    if (rest.isNotEmpty) parts.insert(0, rest);
+    return '${parts.join(',')},$last3';
+  }
+
+  static String _signed(int v) => '${v >= 0 ? '+' : '−'}₹${_grp(v.abs())}';
+
+  static String _fmt2(double v) {
+    final cents = (v * 100).round();
+    return '${_grp(cents ~/ 100)}.${(cents % 100).toString().padLeft(2, '0')}';
+  }
+
+  static double _cash(int ph, double lt) {
+    if (ph == 0) {
+      return 300000 - _spent * Curves.easeOut.transform(_p(lt, .72, .9));
+    }
+    return _cashAfterBuy.toDouble();
+  }
+
+  (String?, Color) _chipFor(int ph, double lt) {
+    switch (ph) {
+      case 0:
+        return (lt > .72 ? '−₹${_grp(_spent)} spent' : null, c.amber);
+      case 1:
+        return (lt > .2 ? '+₹1,240 P&L' : null, c.up);
+      case 2:
+        return ('+₹1,240 P&L', c.up);
+      default:
+        return (lt > .55 ? 'Rank #3 ▲1' : 'Rank #4', c.accent);
     }
   }
 
-  Future<void> _fetchQuotes() async {
-    final rows = await _client
-        .from('prev_nifty_indices')
-        .select()
-        .inFilter('symbol', _watchSymbols);
-
-    final map = <String, IndexQuote>{};
-    for (final row in (rows as List)) {
-      final q = IndexQuote.fromMap(row as Map<String, dynamic>);
-      map[q.symbol] = q;
-    }
-    if (mounted) setState(() => _quotes = map);
-  }
-
-  Future<void> _fetchTraders() async {
-    final rows = await _client
-        .from('prev_balance')
-        .select('suid, displayname, imgurl, updated_at')
-        .order('updated_at', ascending: false)
-        .limit(3);
-
-    final traders = (rows as List)
-        .map((r) => TraderInfo.fromMap(r as Map<String, dynamic>))
-        .toList();
-
-    final countRes = await _client
-        .from('prev_balance')
-        .select('id')
-        .count(CountOption.exact);
-
-    if (mounted) {
-      setState(() {
-        _topTraders = traders;
-        _traderCount = countRes.count;
-      });
-    }
-  }
-
-  void _subscribeRealtime() {
-    _channel = _client
-        .channel('public:prev_nifty_indices')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'prev_nifty_indices',
-          callback: (payload) {
-            final newRow = payload.newRecord;
-            if (newRow.isEmpty) return;
-            final q = IndexQuote.fromMap(newRow);
-            if (_watchSymbols.contains(q.symbol) && mounted) {
-              setState(() => _quotes = {..._quotes, q.symbol: q});
-            }
-          },
-        )
-        .subscribe();
-  }
-
+  // ---------- build ----------
   @override
   Widget build(BuildContext context) {
-    final c = PTColors.of(context);
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: widget.onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: c.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: c.border),
-        ),
-        child: _error != null
-            ? _ErrorState(colors: c, message: _error!, onRetry: _bootstrap)
-            : _LoadedContent(
-                colors: c,
-                phase: _phase,
-                quotes: _quotes,
-                topTraders: _topTraders,
-                traderCount: _traderCount,
-                isLoading: _loading,
-              ),
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// LOADED CONTENT
-// ============================================================================
-
-class _LoadedContent extends StatelessWidget {
-  final PTColors colors;
-  final MarketPhase phase;
-  final Map<String, IndexQuote> quotes;
-  final List<TraderInfo> topTraders;
-  final int traderCount;
-  final bool isLoading; // NEW
-
-  const _LoadedContent({
-    required this.colors,
-    required this.phase,
-    required this.quotes,
-    required this.topTraders,
-    required this.traderCount,
-    required this.isLoading, // NEW
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final copy = MarketStatus.copy(phase);
-    final nifty = quotes['NIFTY50'];
-    final bankNifty = quotes['NIFTYBANK'];
-
-    return InkWell(
-      onTap: () {
-        Get.toNamed('/practice-trading');
-      },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Top row: label + phase badge
-          Row(
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: colors.amber,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'PRACTICE TRADING',
-                style: TextStyle(
-                  color: colors.muted,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.6,
-                ),
-              ),
-              const Spacer(),
-              _PhaseBadge(colors: colors, phase: phase, label: copy.badge),
+    c = _C.of(context);
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTap: _go,
+      child: AnimatedScale(
+        scale: _pressed ? 0.98 : 1,
+        duration: const Duration(milliseconds: 120),
+        child: Container(
+          height: widget.height,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: c.card,
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: c.border),
+            boxShadow: [
+              BoxShadow(
+                  color: c.shadow, blurRadius: 20, offset: const Offset(0, 8)),
             ],
           ),
-          const SizedBox(height: 14),
-
-          // Headline
-          Text(
-            copy.headline,
-            style: TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.w700,
-              color: colors.text,
-              height: 1.25,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            copy.subtitle,
-            style: TextStyle(color: colors.muted, fontSize: 12),
-          ),
-          if (copy.note != null) ...[
-            const SizedBox(height: 8),
-            _DisclaimerNote(colors: colors, text: copy.note!),
-          ],
-          const SizedBox(height: 16),
-
-          // Price ticker row — only this reflects loading
-          Row(
-            children: [
-              Expanded(
-                child: _MiniTicker(
-                  colors: colors,
-                  label: 'NIFTY 50',
-                  quote: nifty,
-                  isLoading: isLoading, // NEW
-                ),
-              ),
-              const SizedBox(width: 18),
-              Expanded(
-                child: _MiniTicker(
-                  colors: colors,
-                  label: 'BANKNIFTY',
-                  quote: bankNifty,
-                  isLoading: isLoading, // NEW
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // Footer: traders + CTA — only avatar stack + count text reflect loading
-          Row(
-            children: [
-              _TraderAvatarStack(
-                colors: colors,
-                traders: topTraders,
-                isLoading: isLoading, // NEW
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: isLoading
-                    ? _SkeletonBar(colors: colors, width: 140, height: 11)
-                    : Text(
-                        traderCount > 0
-                            ? '${formatIndianNumber(traderCount.toDouble(), decimals: 0)}+ traders'
-                            : '₹300k virtual capital',
-                        style: TextStyle(color: colors.muted, fontSize: 12),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-              ),
-              // Start CTA button — UNCHANGED, always tappable/visible
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                decoration: BoxDecoration(
-                  color: colors.amber,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Start Virtual Trading',
-                      style: TextStyle(
-                        color: colors.bg,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Icon(Icons.arrow_forward, size: 14, color: colors.bg),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-// ============================================================================
-// DISCLAIMER NOTE — "previous day's data, for educational purposes only"
-// ============================================================================
-
-class _DisclaimerNote extends StatelessWidget {
-  final PTColors colors;
-  final String text;
-
-  const _DisclaimerNote({required this.colors, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(
-        color: colors.surface2,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: colors.border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.info_outline_rounded, size: 12, color: colors.muted),
-          const SizedBox(width: 5),
-          Flexible(
-            child: Text(
-              text,
-              style: TextStyle(
-                color: colors.muted,
-                fontSize: 10.5,
-                fontWeight: FontWeight.w500,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// PHASE BADGE (with pulsing dot when a session is live/replaying)
-// ============================================================================
-
-class _PhaseBadge extends StatefulWidget {
-  final PTColors colors;
-  final MarketPhase phase;
-  final String label;
-
-  const _PhaseBadge({
-    required this.colors,
-    required this.phase,
-    required this.label,
-  });
-
-  @override
-  State<_PhaseBadge> createState() => _PhaseBadgeState();
-}
-
-class _PhaseBadgeState extends State<_PhaseBadge>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  Color get _dotColor {
-    switch (widget.phase) {
-      case MarketPhase.session1:
-      case MarketPhase.session2:
-        return widget.colors.green;
-      case MarketPhase.closed:
-        return widget.colors.grey;
-    }
-  }
-
-  bool get _pulses => widget.phase != MarketPhase.closed;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = widget.colors;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        border: Border.all(color: c.border),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AnimatedBuilder(
-            animation: _ctrl,
-            builder: (context, _) {
-              final opacity = _pulses ? 0.4 + (_ctrl.value * 0.6) : 1.0;
-              return Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(
-                  color: _dotColor.withOpacity(opacity),
-                  shape: BoxShape.circle,
-                ),
+          child: AnimatedBuilder(
+            animation: _tl,
+            builder: (_, __) {
+              final s = _tl.value * _total;
+              final (ph, lt) = _phaseOf(s);
+              final (chipText, chipColor) = _chipFor(ph, lt);
+              return Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _header(s),
+                  _demo(ph, lt, chipText, chipColor),
+                  _cta(s),
+                ],
               );
             },
           ),
-          const SizedBox(width: 5),
-          Text(
-            widget.label,
-            style: TextStyle(
-              color: c.muted,
-              fontSize: 10.5,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.3,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
-}
 
-// ============================================================================
-// MINI TICKER
-// ============================================================================
-
-class _MiniTicker extends StatelessWidget {
-  final PTColors colors;
-  final String label;
-  final IndexQuote? quote;
-  final bool isLoading; // NEW
-
-  const _MiniTicker({
-    required this.colors,
-    required this.label,
-    required this.quote,
-    required this.isLoading, // NEW
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (isLoading) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: TextStyle(color: colors.muted, fontSize: 10.5)),
-          const SizedBox(height: 4),
-          _SkeletonBar(colors: colors, width: 70, height: 14),
-          const SizedBox(height: 4),
-          _SkeletonBar(colors: colors, width: 44, height: 10),
-        ],
-      );
-    }
-
-    if (quote == null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: TextStyle(color: colors.muted, fontSize: 10.5)),
-          const SizedBox(height: 2),
-          Text('—', style: TextStyle(color: colors.muted, fontSize: 13)),
-        ],
-      );
-    }
-
-    final changeColor = quote!.isUp ? colors.green : colors.red;
+  // ---------- 1. header: plain text ----------
+  Widget _header(double s) {
+    final p = (math.sin(s * 2 * math.pi / 2.5) + 1) / 2;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(color: colors.muted, fontSize: 10.5)),
-        const SizedBox(height: 2),
         Row(
           children: [
-            Flexible(
-              child: Text(
-                formatIndianNumber(quote!.ltp),
-                style: TextStyle(
-                  color: colors.text,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  fontFamily: 'JetBrainsMono',
-                  fontFamilyFallback: const ['monospace'],
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Icon(
-              quote!.isUp ? Icons.arrow_drop_up : Icons.arrow_drop_down,
-              size: 16,
-              color: changeColor,
-            ),
-          ],
-        ),
-        Text(
-          '${quote!.isUp ? '+' : ''}${quote!.pChange.toStringAsFixed(2)}%',
-          style: TextStyle(
-            color: changeColor,
-            fontSize: 10.5,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ============================================================================
-// SHIMMER PRIMITIVES — reused by any widget that needs a skeleton state
-// ============================================================================
-
-class _Shimmer extends StatefulWidget {
-  final PTColors colors;
-  final Widget child;
-
-  const _Shimmer({required this.colors, required this.child});
-
-  @override
-  State<_Shimmer> createState() => _ShimmerState();
-}
-
-class _ShimmerState extends State<_Shimmer>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) {
-        return Opacity(
-          opacity: 0.5 + _ctrl.value * 0.3,
-          child: widget.child,
-        );
-      },
-    );
-  }
-}
-
-class _SkeletonBar extends StatelessWidget {
-  final PTColors colors;
-  final double width;
-  final double height;
-
-  const _SkeletonBar({
-    required this.colors,
-    required this.width,
-    required this.height,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return _Shimmer(
-      colors: colors,
-      child: Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: colors.surface2,
-          borderRadius: BorderRadius.circular(6),
-        ),
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// TRADER AVATAR STACK
-// ============================================================================
-
-class _TraderAvatarStack extends StatelessWidget {
-  final PTColors colors;
-  final List<TraderInfo> traders;
-  final bool isLoading; // NEW
-
-  const _TraderAvatarStack({
-    required this.colors,
-    required this.traders,
-    required this.isLoading, // NEW
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const double size = 22;
-    const double overlap = 12;
-
-    if (isLoading) {
-      return SizedBox(
-        width: size + overlap * 2, // reserve space for ~3 avatars
-        height: size,
-        child: Stack(
-          children: [
-            for (int i = 0; i < 3; i++)
-              Positioned(
-                left: i * overlap,
-                child: _Shimmer(
-                  colors: colors,
-                  child: Container(
-                    width: size,
-                    height: size,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                  color: c.up.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(20)),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(color: colors.surface, width: 1.5),
-                      color: colors.surface2,
+                      color: c.up,
+                      boxShadow: [
+                        BoxShadow(
+                            color: c.up.withOpacity(0.55 * p),
+                            blurRadius: 5 + 4 * p,
+                            spreadRadius: 1 + 2 * p),
+                      ],
                     ),
                   ),
-                ),
+                  const SizedBox(width: 6),
+                  Text('PRACTICE MODE',
+                      style: TextStyle(
+                          color: c.up,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8)),
+                ],
               ),
+            ),
+            const Spacer(),
+            Text('Educational • No real money',
+                style: TextStyle(
+                    color: c.sub, fontSize: 10.5, fontWeight: FontWeight.w500)),
           ],
         ),
-      );
-    }
+        const SizedBox(height: 10),
+        Text('Practice trading, risk-free',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                color: c.text,
+                fontSize: 19,
+                height: 1.2,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.3)),
+        const SizedBox(height: 2),
+        Text('Free ₹3,00,000 virtual cash, every day',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                color: c.sub,
+                fontSize: 12.5,
+                height: 1.2,
+                fontWeight: FontWeight.w500)),
+      ],
+    );
+  }
 
-    if (traders.isEmpty) return const SizedBox.shrink();
-
-    return SizedBox(
-      width: size + overlap * (traders.length - 1),
-      height: size,
-      child: Stack(
+  // ---------- 2. demo container: non-interactive ----------
+  Widget _demo(int ph, double lt, String? chip, Color chipColor) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: c.stage,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: c.stageBorder),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (int i = 0; i < traders.length; i++)
-            Positioned(
-              left: i * overlap,
-              child: _Avatar(colors: colors, trader: traders[i], size: size),
+          _hero(_cash(ph, lt), chip, chipColor),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 100,
+            child: ClipRect(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (w, a) => FadeTransition(
+                  opacity: a,
+                  child: SlideTransition(
+                    position:
+                        Tween(begin: const Offset(0, 0.08), end: Offset.zero)
+                            .animate(a),
+                    child: w,
+                  ),
+                ),
+                child: KeyedSubtree(
+                  key: ValueKey(ph),
+                  child: SizedBox.expand(child: _stageBody(ph, lt)),
+                ),
+              ),
             ),
+          ),
+          const SizedBox(height: 10),
+          _caption(ph, lt),
         ],
       ),
     );
   }
-}
 
-class _Avatar extends StatelessWidget {
-  final PTColors colors;
-  final TraderInfo trader;
-  final double size;
-
-  const _Avatar({
-    required this.colors,
-    required this.trader,
-    required this.size,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final hasImg = (trader.imgUrl ?? '').isNotEmpty;
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(color: colors.surface, width: 1.5),
-        color: colors.surface2,
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: hasImg
-          ? Image.network(
-              trader.imgUrl!,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => _initialAvatar(),
-              loadingBuilder: (context, child, progress) {
-                if (progress == null) return child;
-                return _initialAvatar();
-              },
-            )
-          : _initialAvatar(),
-    );
-  }
-
-  Widget _initialAvatar() {
-    return Center(
-      child: Text(
-        trader.initial,
-        style: TextStyle(
-          color: colors.muted,
-          fontSize: size * 0.42,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// LOADING STATE (skeleton)
-// ============================================================================
-
-class _LoadingState extends StatefulWidget {
-  final PTColors colors;
-  const _LoadingState({required this.colors});
-
-  @override
-  State<_LoadingState> createState() => _LoadingStateState();
-}
-
-class _LoadingStateState extends State<_LoadingState>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = widget.colors;
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) {
-        final o = 0.5 + _ctrl.value * 0.3;
-        Widget bar(double w, double h, {double radius = 6}) => Container(
-              width: w,
-              height: h,
-              decoration: BoxDecoration(
-                color: c.surface2.withOpacity(o),
-                borderRadius: BorderRadius.circular(radius),
-              ),
-            );
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                bar(120, 11),
-                const Spacer(),
-                bar(60, 18, radius: 999),
-              ],
-            ),
-            const SizedBox(height: 16),
-            bar(180, 18),
-            const SizedBox(height: 8),
-            bar(220, 12),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      bar(60, 10),
-                      const SizedBox(height: 6),
-                      bar(80, 14),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 18),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      bar(70, 10),
-                      const SizedBox(height: 6),
-                      bar(90, 14),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                bar(60, 22, radius: 11),
-                const SizedBox(width: 8),
-                Expanded(child: bar(100, 10)),
-                bar(70, 26, radius: 8),
-              ],
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ============================================================================
-// ERROR STATE
-// ============================================================================
-
-class _ErrorState extends StatelessWidget {
-  final PTColors colors;
-  final String message;
-  final VoidCallback onRetry;
-
-  const _ErrorState({
-    required this.colors,
-    required this.message,
-    required this.onRetry,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _hero(double cash, String? chip, Color chipColor) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        Row(
-          children: [
-            Icon(Icons.wifi_off_rounded, size: 18, color: colors.red),
-            const SizedBox(width: 8),
-            Text(
-              "Couldn't load practice data",
-              style: TextStyle(
-                color: colors.text,
-                fontWeight: FontWeight.w700,
-                fontSize: 14,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          message,
-          style: TextStyle(color: colors.muted, fontSize: 12.5),
-        ),
-        const SizedBox(height: 14),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: onRetry,
-            style: TextButton.styleFrom(
-              foregroundColor: colors.amber,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              backgroundColor: colors.surface2,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-            icon: const Icon(Icons.refresh_rounded, size: 16),
-            label: const Text(
-              'Retry',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
-            ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Virtual cash',
+                  style: TextStyle(
+                      color: c.sub,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500)),
+              Text('₹${_grp(cash.round())}',
+                  style: TextStyle(
+                    color: c.text,
+                    fontSize: 30,
+                    height: 1.1,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.5,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  )),
+            ],
           ),
+        ),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          transitionBuilder: (w, a) => FadeTransition(
+              opacity: a, child: ScaleTransition(scale: a, child: w)),
+          child: chip == null
+              ? const SizedBox(key: ValueKey('none'), height: 26)
+              : Container(
+                  key: ValueKey(chip),
+                  margin: const EdgeInsets.only(bottom: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                      color: chipColor.withOpacity(0.14),
+                      borderRadius: BorderRadius.circular(10)),
+                  child: Text(chip,
+                      style: TextStyle(
+                          color: chipColor,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800)),
+                ),
         ),
       ],
     );
   }
+
+  Widget _stageBody(int ph, double lt) {
+    switch (ph) {
+      case 0:
+        return _tradeStage(lt);
+      case 1:
+        return _pnlStage(lt);
+      case 2:
+        return _optionStage(lt);
+      default:
+        return _rankStage(lt);
+    }
+  }
+
+  // 0: buy. No buttons: flat tag, plain qty, tinted order strip.
+  Widget _tradeStage(double lt) {
+    final qty = lt < .18 ? 1 : (lt < .28 ? 3 : (lt < .38 ? 6 : 10));
+    final placed = lt > .72;
+    final rp = _p(lt, .62, .78);
+    final flash = (rp > 0 && rp < 1) ? math.sin(math.pi * rp) : 0.0;
+    final stripOpacity = placed ? 0.2 : 0.1 + 0.25 * flash;
+
+    return Column(children: [
+      SizedBox(
+        height: 22,
+        child: Row(children: [
+          Text('ADANIPORTS',
+              style: TextStyle(
+                  color: c.text, fontSize: 14, fontWeight: FontWeight.w800)),
+          const Spacer(),
+          Text('₹1,709.60',
+              style: TextStyle(
+                  color: c.text, fontSize: 14, fontWeight: FontWeight.w800)),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            decoration: BoxDecoration(
+                color: c.down.withOpacity(0.14),
+                borderRadius: BorderRadius.circular(6)),
+            alignment: Alignment.center,
+            child: Text('▼ 2.31%',
+                style: TextStyle(
+                    color: c.down, fontSize: 10, fontWeight: FontWeight.w700)),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 10),
+      SizedBox(
+        height: 24,
+        child: Row(children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: c.up.withOpacity(0.14),
+                borderRadius: BorderRadius.circular(6)),
+            child: Text('BUY',
+                style: TextStyle(
+                    color: c.up, fontSize: 10.5, fontWeight: FontWeight.w800)),
+          ),
+          const Spacer(),
+          Text('Qty  ', style: TextStyle(color: c.sub, fontSize: 11.5)),
+          Text('$qty',
+              style: TextStyle(
+                  color: c.text,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+        ]),
+      ),
+      const SizedBox(height: 10),
+      Container(
+        height: 34,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: c.up.withOpacity(stripOpacity),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(placed ? '✓ Order placed · Bought 10' : 'Order · BUY $qty',
+            style: TextStyle(
+                color: c.up,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.3)),
+      ),
+    ]);
+  }
+
+  // 1: P&L moves
+  Widget _pnlStage(double lt) {
+    final e = Curves.easeOut.transform(_p(lt, .05, .8));
+    final pl = (1240 * e).round();
+    final price = 1709.60 + 124 * e;
+    return Column(children: [
+      SizedBox(
+        height: 20,
+        child: Row(children: [
+          Text('ADANIPORTS · 10 qty',
+              style: TextStyle(
+                  color: c.sub, fontSize: 12, fontWeight: FontWeight.w700)),
+          const Spacer(),
+          Text('₹${_fmt2(price)}',
+              style: TextStyle(
+                  color: c.text,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+        ]),
+      ),
+      const SizedBox(height: 4),
+      SizedBox(
+        height: 50,
+        width: double.infinity,
+        child: CustomPaint(
+          painter: _SparkPainter(
+            e,
+            line: c.up,
+            entry: c.sub.withOpacity(0.5),
+            fill: c.up.withOpacity(0.12),
+            dot: c.stage,
+          ),
+        ),
+      ),
+      const SizedBox(height: 4),
+      SizedBox(
+        height: 22,
+        child: Row(children: [
+          Text('Unrealised P&L', style: TextStyle(color: c.sub, fontSize: 11)),
+          const Spacer(),
+          Text(_signed(pl),
+              style: TextStyle(
+                  color: c.up,
+                  fontSize: 18,
+                  height: 1.1,
+                  fontWeight: FontWeight.w800,
+                  fontFeatures: const [FontFeature.tabularFigures()])),
+        ]),
+      ),
+    ]);
+  }
+
+  // 2: option chain
+  Widget _optionStage(double lt) {
+    const strikes = ['24,800', '24,850', '24,900'];
+    const calls = [.35, .6, .95];
+    const puts = [.9, .65, .3];
+    const callTxt = ['4.1L', '7.0L', '11L'];
+    const putTxt = ['10L', '7.6L', '3.5L'];
+    final pulse = (math.sin(lt * 2 * math.pi * 3) + 1) / 2;
+
+    Widget head(String t, Alignment a) => Expanded(
+          child: Align(
+            alignment: a,
+            child: Text(t,
+                style: TextStyle(
+                    color: c.sub,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8)),
+          ),
+        );
+
+    return Column(children: [
+      SizedBox(
+        height: 14,
+        child: Row(children: [
+          head('CALLS · OI', Alignment.centerLeft),
+          const SizedBox(width: 64),
+          head('PUTS · OI', Alignment.centerRight),
+        ]),
+      ),
+      for (var i = 0; i < 3; i++) ...[
+        const SizedBox(height: 3),
+        Builder(builder: (_) {
+          final g =
+              Curves.easeOut.transform(_p(lt, .05 + .12 * i, .5 + .12 * i));
+          final atm = i == 1;
+          return Container(
+            height: 24,
+            decoration: BoxDecoration(
+              color: atm ? c.accent.withOpacity(0.08 + 0.07 * pulse) : null,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(children: [
+              Expanded(
+                child: Stack(children: [
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FractionallySizedBox(
+                      widthFactor: calls[i] * g,
+                      child: Container(
+                        height: 12,
+                        decoration: BoxDecoration(
+                            color: c.down.withOpacity(0.75),
+                            borderRadius: BorderRadius.circular(6)),
+                      ),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: Opacity(
+                        opacity: g,
+                        child: Text(callTxt[i],
+                            style: TextStyle(
+                                color: c.sub,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+              SizedBox(
+                width: 64,
+                child: Center(
+                  child: Text(strikes[i],
+                      style: TextStyle(
+                          color: c.text,
+                          fontSize: 11.5,
+                          fontWeight: atm ? FontWeight.w800 : FontWeight.w600)),
+                ),
+              ),
+              Expanded(
+                child: Stack(children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FractionallySizedBox(
+                      widthFactor: puts[i] * g,
+                      child: Container(
+                        height: 12,
+                        decoration: BoxDecoration(
+                            color: c.up.withOpacity(0.75),
+                            borderRadius: BorderRadius.circular(6)),
+                      ),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Opacity(
+                        opacity: g,
+                        child: Text(putTxt[i],
+                            style: TextStyle(
+                                color: c.sub,
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+            ]),
+          );
+        }),
+      ],
+    ]);
+  }
+
+  // 3: leaderboard
+  Widget _rankStage(double lt) {
+    final s = Curves.easeInOutCubic.transform(_p(lt, .45, .75));
+    const stride = 25.0;
+
+    Widget row(int order, double pos, int rank, String name, String pct,
+        {bool you = false}) {
+      final a = _p(lt, .06 * order, .2 + .06 * order);
+      final medal = rank == 1
+          ? const Color(0xFFF5B301)
+          : rank == 2
+              ? const Color(0xFF9CA3AF)
+              : rank == 3
+                  ? const Color(0xFFC2793B)
+                  : c.track;
+      final onMedal = rank <= 3 ? Colors.white : c.sub;
+      return Positioned(
+        top: pos * stride,
+        left: 0,
+        right: 0,
+        height: 21,
+        child: Opacity(
+          opacity: a,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            decoration: BoxDecoration(
+              color: you ? c.accent : c.card,
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: you
+                  ? [
+                      BoxShadow(
+                          color: c.accent.withOpacity(0.4 * s), blurRadius: 10)
+                    ]
+                  : null,
+            ),
+            child: Row(children: [
+              Container(
+                width: 15,
+                height: 15,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(shape: BoxShape.circle, color: medal),
+                child: Text('$rank',
+                    style: TextStyle(
+                        color: onMedal,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800)),
+              ),
+              const SizedBox(width: 8),
+              Text(name,
+                  style: TextStyle(
+                      color: you ? Colors.white : c.text,
+                      fontSize: 11.5,
+                      fontWeight: you ? FontWeight.w800 : FontWeight.w600)),
+              const Spacer(),
+              if (you && s > .9)
+                Container(
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.22),
+                      borderRadius: BorderRadius.circular(6)),
+                  child: const Text('▲ 1',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w800)),
+                ),
+              Text(pct,
+                  style: TextStyle(
+                      color: you ? Colors.white : c.up,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700)),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    return Stack(children: [
+      row(0, 0, 1, 'Arjun K', '+8.4%'),
+      row(1, 1, 2, 'Meera S', '+6.9%'),
+      row(2, 2 + s, s > .5 ? 4 : 3, 'Rahul P', '+5.2%'),
+      row(3, 3 - s, s > .5 ? 3 : 4, 'You', s > .5 ? '+5.8%' : '+4.6%',
+          you: true),
+    ]);
+  }
+
+  // ---------- caption + step indicator (not tappable) ----------
+  Widget _caption(int ph, double lt) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 18,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 250),
+            transitionBuilder: (w, a) => FadeTransition(opacity: a, child: w),
+            layoutBuilder: (cur, prev) => Stack(
+              alignment: Alignment.centerLeft,
+              children: [...prev, if (cur != null) cur],
+            ),
+            child: Text(_captions[ph],
+                key: ValueKey(ph),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: c.sub, fontSize: 12.5, fontWeight: FontWeight.w600)),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(children: [
+          for (var i = 0; i < _dur.length; i++) ...[
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: Stack(children: [
+                  Container(height: 3, color: c.track),
+                  FractionallySizedBox(
+                    widthFactor: i < ph ? 1 : (i == ph ? lt : 0),
+                    child: Container(height: 3, color: c.sub),
+                  ),
+                ]),
+              ),
+            ),
+            if (i < _dur.length - 1) const SizedBox(width: 4),
+          ],
+        ]),
+      ],
+    );
+  }
+
+  // ---------- 3. CTA: only solid brand block + only real button ----------
+  Widget _cta(double s) {
+    final glow = (math.sin(s * 2 * math.pi / 2.0) + 1) / 2;
+    return Container(
+      height: 64,
+      padding: const EdgeInsets.fromLTRB(16, 0, 10, 0),
+      decoration: BoxDecoration(
+        color: c.accent,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+              color: c.accent.withOpacity(0.18 + 0.14 * glow),
+              blurRadius: 10 + 6 * glow,
+              offset: const Offset(0, 4)),
+        ],
+      ),
+      child: Row(children: [
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Want to try it yourself?',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: Colors.white.withOpacity(0.78),
+                      fontSize: 11.5,
+                      height: 1.2,
+                      fontWeight: FontWeight.w600)),
+              const Text('Start practicing, it’s free',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      height: 1.25,
+                      fontWeight: FontWeight.w800)),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        Transform.scale(
+          scale: 1 + 0.03 * glow,
+          child: Container(
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(14)),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Try now',
+                    style: TextStyle(
+                        color: c.dark ? const Color(0xFF1F4FD6) : c.accent,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(width: 6),
+                Transform.translate(
+                  offset: Offset(2.5 * math.sin(s * 2 * math.pi / 1.4), 0),
+                  child: Icon(Icons.arrow_forward_rounded,
+                      size: 18,
+                      color: c.dark ? const Color(0xFF1F4FD6) : c.accent),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Rising price line with dashed entry level. p = 0..1 draw progress.
+class _SparkPainter extends CustomPainter {
+  _SparkPainter(this.p,
+      {required this.line,
+      required this.entry,
+      required this.fill,
+      required this.dot});
+  final double p;
+  final Color line, entry, fill, dot;
+
+  static const _pts = [0.72, 0.64, 0.68, 0.52, 0.56, 0.40, 0.44, 0.24, 0.14];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final offs = [
+      for (var i = 0; i < _pts.length; i++)
+        Offset(size.width * i / (_pts.length - 1), size.height * _pts[i])
+    ];
+
+    final entryPaint = Paint()
+      ..color = entry
+      ..strokeWidth = 1;
+    for (double x = 0; x < size.width; x += 8) {
+      canvas.drawLine(
+          Offset(x, offs.first.dy), Offset(x + 4, offs.first.dy), entryPaint);
+    }
+
+    if (p <= 0) return;
+    final path = Path()..moveTo(offs.first.dx, offs.first.dy);
+    for (final o in offs.skip(1)) {
+      path.lineTo(o.dx, o.dy);
+    }
+    final m = path.computeMetrics().first;
+    final part = m.extractPath(0, m.length * p);
+    final tip = m.getTangentForOffset(m.length * p)!.position;
+
+    final area = Path.from(part)
+      ..lineTo(tip.dx, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(area, Paint()..color = fill);
+
+    canvas.drawPath(
+        part,
+        Paint()
+          ..color = line
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.6
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round);
+    canvas.drawCircle(tip, 6, Paint()..color = line.withOpacity(0.25));
+    canvas.drawCircle(tip, 3.6, Paint()..color = line);
+    canvas.drawCircle(tip, 1.6, Paint()..color = dot);
+  }
+
+  @override
+  bool shouldRepaint(_SparkPainter old) =>
+      old.p != p || old.line != line || old.fill != fill;
 }

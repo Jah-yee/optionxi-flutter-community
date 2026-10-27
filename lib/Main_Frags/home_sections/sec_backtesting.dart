@@ -6,9 +6,9 @@ import 'package:optionxi/Components/cust_upgrade_to_pro.dart';
 /// In plain words: "Did our calls actually work?"
 ///
 /// Tapping the card opens a sheet with three track-record reports:
-///   • Nifty      → were our up/down calls on the market right?
+///   • Index Picks      → were our up/down calls on the market right?
 ///   • Scanner    → did stocks our scanners flagged actually move?
-///   • AI Picks   → did the stocks our AI shortlisted do well afterwards?
+///   • Stock Picks   → did the stocks our AI shortlisted do well afterwards?
 ///
 /// Each report row shows a one-line summary. A small "Explain it simply"
 /// toggle opens a friendly explanation + example, so nobody is forced to
@@ -147,7 +147,7 @@ class BacktestingSection extends StatelessWidget {
                             const SizedBox(width: 10),
                             Flexible(
                               child: Text(
-                                'Nifty, Scanner and AI Picks',
+                                'Nifty, Scanner and Stocks Picks',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: theme.textTheme.labelMedium?.copyWith(
@@ -373,7 +373,7 @@ class _BacktestOptionsSheet extends StatelessWidget {
             _ReportCard(
               icon: Icons.show_chart_rounded,
               color: _kNifty,
-              title: 'Nifty',
+              title: 'Nifty Picks',
               summary: 'When we said the market would go up or down, '
                   'were we right?',
               explainer: 'We tell you how sure we are about Nifty\'s next '
@@ -406,7 +406,7 @@ class _BacktestOptionsSheet extends StatelessWidget {
             _ReportCard(
               icon: Icons.auto_awesome_rounded,
               color: _kAi,
-              title: 'AI Picks',
+              title: 'Stock Picks',
               summary: 'Our AI\'s shortlist of stocks. How did they do '
                   'afterwards?',
               explainer: 'The AI shortlists stocks that many scanners '
@@ -428,7 +428,7 @@ class _BacktestOptionsSheet extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
-            ProUpgradeButton(),
+            // ProUpgradeButton(),
           ],
         ),
       ),

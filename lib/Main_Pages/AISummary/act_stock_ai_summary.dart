@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -14,95 +15,71 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
 
-// ─── API Base from env ────────────────────────────────────────────────────────
+// ─── API ──────────────────────────────────────────────────────────────────────
 String get kApiBase => dotenv.env['AI_SUMMARY_URL']!;
 
-// ─── Design System (dark / light aware) ──────────────────────────────────────
-class _DS {
-  // ── Backgrounds ───────────────────────────────────────────────────────────
-  static const _dBg = Color(0xFF080C12);
-  static const _dSurface = Color(0xFF0E1520);
-  static const _dCard = Color(0xFF111B2A);
-  static const _dBorder = Color(0xFF1C2E45);
-  static const _dDivider = Color(0xFF172030);
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+double _num(dynamic v) => (v as num?)?.toDouble() ?? 0.0;
+final _n2 = NumberFormat('#,##0.00');
 
-  static const _lBg = Color(0xFFF5F7FB);
-  static const _lSurface = Color(0xFFEDF0F7);
-  static const _lCard = Color(0xFFFFFFFF);
-  static const _lBorder = Color(0xFFE2E8F0);
-  static const _lDivider = Color(0xFFE8EDF5);
-
-  // ── Semantic (same in both modes) ─────────────────────────────────────────
-  static const cyan = Color(0xFF00D4FF);
-  static const _dGreen = Color(0xFF00E5A0); // neon mint  — dark
-  static const _lGreen = Color(0xFF16A34A); // forest green — light
-  static const red = Color(0xFFFF4D6A);
-  static const amber = Color(0xFFFFB340);
-  static const violet = Color(0xFFA78BFA);
-
-  static Color green(bool d) => d ? _dGreen : _lGreen;
-
-  // ── Context-aware accessors ───────────────────────────────────────────────
-  static Color bg(bool d) => d ? _dBg : _lBg;
-  static Color surface(bool d) => d ? _dSurface : _lSurface;
-  static Color card(bool d) => d ? _dCard : _lCard;
-  static Color border(bool d) => d ? _dBorder : _lBorder;
-  static Color divider(bool d) => d ? _dDivider : _lDivider;
-  static Color textPrimary(bool d) =>
-      d ? const Color(0xFFE8F0FF) : const Color(0xFF0A1628);
-  static Color textSecondary(bool d) =>
-      d ? const Color(0xFF5E7A9E) : const Color(0xFF64748B);
-  static Color textTertiary(bool d) =>
-      d ? const Color(0xFF3A506B) : const Color(0xFF94A3B8);
+Future<int> _getBuildNumber() async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    return int.tryParse(info.buildNumber) ?? 0;
+  } catch (_) {
+    return 0;
+  }
 }
 
-// ─── Chart Data Model ─────────────────────────────────────────────────────────
+String _cleanSymbol(String s) => s
+    .replaceAll('NSE:', '')
+    .replaceAll('-EQ', '')
+    .replaceAll('-BE', '')
+    .replaceAll('.NS', '');
+
+// ─── Design tokens (same family as the Nifty page) ────────────────────────────
+class _T {
+  static const up = Color(0xFF12A66A);
+  static const down = Color(0xFFE04B4B);
+  static const mid = Color(0xFFE39A1B);
+  static const link = Color(0xFF2F6BFF);
+
+  static bool dark(BuildContext c) => Theme.of(c).brightness == Brightness.dark;
+  static Color bg(BuildContext c) =>
+      dark(c) ? const Color(0xFF0C1210) : const Color(0xFFF2F5F3);
+  static Color surface(BuildContext c) =>
+      dark(c) ? const Color(0xFF161E1B) : Colors.white;
+  static Color alt(BuildContext c) =>
+      dark(c) ? const Color(0xFF1E2824) : const Color(0xFFEBF0ED);
+  static Color hair(BuildContext c) =>
+      dark(c) ? const Color(0xFF2A3631) : const Color(0xFFDFE6E2);
+  static Color ink(BuildContext c) =>
+      dark(c) ? const Color(0xFFEAF1ED) : const Color(0xFF101815);
+  static Color sub(BuildContext c) =>
+      dark(c) ? const Color(0xFF93A39B) : const Color(0xFF55625C);
+}
+
+TextStyle _ts(BuildContext c,
+        {double s = 14,
+        FontWeight w = FontWeight.w500,
+        Color? color,
+        double h = 1.4,
+        bool figures = false}) =>
+    GoogleFonts.manrope(
+      fontSize: s,
+      fontWeight: w,
+      color: color ?? _T.ink(c),
+      height: h,
+      fontFeatures: figures ? const [FontFeature.tabularFigures()] : null,
+    );
+
+// ─── Models ───────────────────────────────────────────────────────────────────
 class _ChartPoint {
   final DateTime date;
   final double close;
   const _ChartPoint({required this.date, required this.close});
 }
 
-// ─── Loading Steps ────────────────────────────────────────────────────────────
-const _kSteps = [
-  (
-    icon: Icons.hub_rounded,
-    label: 'Establishing connection',
-    sub: 'Version check & market status'
-  ),
-  (
-    icon: Icons.candlestick_chart_rounded,
-    label: 'Loading price history',
-    sub: 'Last 30 daily candles'
-  ),
-  (
-    icon: Icons.analytics_rounded,
-    label: 'Reading indicators',
-    sub: 'RSI · EMA · SMA · Volume'
-  ),
-  (
-    icon: Icons.notifications_active_rounded,
-    label: 'Checking alerts',
-    sub: 'Active conditions & targets'
-  ),
-  (
-    icon: Icons.account_balance_rounded,
-    label: 'Pulling financials',
-    sub: 'Balance sheet & P&L — 3 years'
-  ),
-  (
-    icon: Icons.manage_search_rounded,
-    label: 'Running screeners',
-    sub: 'Bullish / bearish pattern scan'
-  ),
-  (
-    icon: Icons.psychology_rounded,
-    label: 'Generating insights',
-    sub: 'LLaMA 70B analysing everything'
-  ),
-];
-
-// ─── Models ───────────────────────────────────────────────────────────────────
 class ScreenerSignal {
   final String name, timeframe, scanDate;
   const ScreenerSignal(
@@ -176,104 +153,13 @@ class FetchCheck {
       detail: j['detail'] ?? '');
 }
 
-class StockAnalysis {
-  final String symbol,
-      companyName,
-      marketSentiment,
-      sentimentEmoji,
-      oneLiner,
-      volumeAnalysis,
-      indicatorSummary,
-      timeframe,
-      confidence,
-      lastUpdated;
-  final double currentPrice, dayChangePct;
-  final List<PriceLevel> supportLevels, resistanceLevels;
-  final List<EntryOpportunity> entries;
-  final List<String> keyObservations, riskFactors;
-  final bool cached;
-  final int? ttlSeconds;
-  final ScreenerAnalysis screenerAnalysis;
-  final AlertSummary alertSummary;
-  final List<FetchCheck> fetchChecks;
-  final int fetchFound, fetchTotal;
-
-  const StockAnalysis({
-    required this.symbol,
-    required this.companyName,
-    required this.marketSentiment,
-    required this.sentimentEmoji,
-    required this.oneLiner,
-    required this.currentPrice,
-    required this.dayChangePct,
-    required this.supportLevels,
-    required this.resistanceLevels,
-    required this.entries,
-    required this.keyObservations,
-    required this.riskFactors,
-    required this.volumeAnalysis,
-    required this.indicatorSummary,
-    required this.timeframe,
-    required this.confidence,
-    required this.lastUpdated,
-    required this.cached,
-    this.ttlSeconds,
-    required this.screenerAnalysis,
-    required this.alertSummary,
-    required this.fetchChecks,
-    required this.fetchFound,
-    required this.fetchTotal,
-  });
-
-  factory StockAnalysis.fromJson(Map<String, dynamic> r) {
-    final d = r['data'] as Map<String, dynamic>;
-    final sa = r['screener_analysis'] as Map<String, dynamic>? ?? {};
-    final aa = r['alert_analysis'] as Map<String, dynamic>? ?? {};
-    final fs = r['fetch_status'] as Map<String, dynamic>? ?? {};
-    return StockAnalysis(
-      symbol: d['symbol'] ?? '',
-      companyName: d['company_name'] ?? '',
-      marketSentiment: d['market_sentiment'] ?? '',
-      sentimentEmoji: d['sentiment_emoji'] ?? '🟡',
-      oneLiner: d['one_liner'] ?? '',
-      currentPrice: (d['current_price'] ?? 0).toDouble(),
-      dayChangePct: (d['day_change_pct'] ?? 0).toDouble(),
-      supportLevels: (d['support_levels'] as List? ?? [])
-          .map((e) => PriceLevel.fromJson(e))
-          .toList(),
-      resistanceLevels: (d['resistance_levels'] as List? ?? [])
-          .map((e) => PriceLevel.fromJson(e))
-          .toList(),
-      entries: (d['entry_opportunities'] as List? ?? [])
-          .map((e) => EntryOpportunity.fromJson(e))
-          .toList(),
-      keyObservations: List<String>.from(d['key_observations'] ?? []),
-      riskFactors: List<String>.from(d['risk_factors'] ?? []),
-      volumeAnalysis: d['volume_analysis'] ?? '',
-      indicatorSummary: d['indicator_summary'] ?? '',
-      timeframe: d['timeframe'] ?? '',
-      confidence: d['confidence'] ?? '',
-      lastUpdated: d['last_updated'] ?? '',
-      cached: r['cached'] ?? false,
-      ttlSeconds: r['ttl_seconds'] as int?,
-      screenerAnalysis: ScreenerAnalysis.fromJson(sa),
-      alertSummary: AlertSummary.fromJson(aa),
-      fetchChecks: (fs['checks'] as List? ?? [])
-          .map((e) => FetchCheck.fromJson(e as Map<String, dynamic>))
-          .toList(),
-      fetchFound: (fs['found_count'] ?? 0) as int,
-      fetchTotal: (fs['total'] ?? 0) as int,
-    );
-  }
-}
-
 class PriceLevel {
   final double price;
   final String strength, note;
   const PriceLevel(
       {required this.price, required this.strength, required this.note});
   factory PriceLevel.fromJson(Map<String, dynamic> j) => PriceLevel(
-      price: (j['price'] ?? 0).toDouble(),
+      price: _num(j['price']),
       strength: j['strength'] ?? '',
       note: j['note'] ?? '');
 }
@@ -295,133 +181,154 @@ class EntryOpportunity {
         entryZone: j['entry_zone'] ?? '',
         rationale: j['rationale'] ?? '',
         riskReward: j['risk_reward'] ?? '',
-        stopLoss: (j['stop_loss'] ?? 0).toDouble(),
-        target1: (j['target_1'] ?? 0).toDouble(),
-        target2: (j['target_2'] ?? 0).toDouble(),
+        stopLoss: _num(j['stop_loss']),
+        target1: _num(j['target_1']),
+        target2: _num(j['target_2']),
       );
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-Future<int> _getBuildNumber() async {
-  try {
-    final info = await PackageInfo.fromPlatform();
-    return int.tryParse(info.buildNumber) ?? 0;
-  } catch (_) {
-    return 0;
-  }
-}
+class StockAnalysis {
+  final String symbol,
+      companyName,
+      marketSentiment,
+      oneLiner,
+      volumeAnalysis,
+      indicatorSummary,
+      timeframe,
+      confidence,
+      lastUpdated;
+  final double currentPrice, dayChangePct;
+  final List<PriceLevel> supportLevels, resistanceLevels;
+  final List<EntryOpportunity> entries;
+  final List<String> keyObservations, riskFactors;
+  final bool cached;
+  final ScreenerAnalysis screenerAnalysis;
+  final AlertSummary alertSummary;
+  final List<FetchCheck> fetchChecks;
+  final int fetchFound, fetchTotal;
 
-void _showUpdateDialog(BuildContext context, bool dark,
-    {required bool compulsory, required String storeUrl}) {
-  showDialog(
-    context: context,
-    barrierDismissible: !compulsory,
-    builder: (_) => WillPopScope(
-      onWillPop: () async => !compulsory,
-      child:
-          _UpdateDialog(dark: dark, compulsory: compulsory, storeUrl: storeUrl),
-    ),
-  );
-}
+  const StockAnalysis({
+    required this.symbol,
+    required this.companyName,
+    required this.marketSentiment,
+    required this.oneLiner,
+    required this.currentPrice,
+    required this.dayChangePct,
+    required this.supportLevels,
+    required this.resistanceLevels,
+    required this.entries,
+    required this.keyObservations,
+    required this.riskFactors,
+    required this.volumeAnalysis,
+    required this.indicatorSummary,
+    required this.timeframe,
+    required this.confidence,
+    required this.lastUpdated,
+    required this.cached,
+    required this.screenerAnalysis,
+    required this.alertSummary,
+    required this.fetchChecks,
+    required this.fetchFound,
+    required this.fetchTotal,
+  });
 
-// ─── Update Dialog ────────────────────────────────────────────────────────────
-class _UpdateDialog extends StatelessWidget {
-  final bool dark, compulsory;
-  final String storeUrl;
-  const _UpdateDialog(
-      {required this.dark, required this.compulsory, required this.storeUrl});
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: Container(
-        padding: const EdgeInsets.all(28),
-        decoration: BoxDecoration(
-          color: _DS.card(dark),
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: _DS.cyan.withOpacity(.2)),
-          boxShadow: [
-            BoxShadow(
-                color: _DS.cyan.withOpacity(.06),
-                blurRadius: 48,
-                spreadRadius: 8)
-          ],
-        ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-            width: 68,
-            height: 68,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: RadialGradient(
-                  colors: [_DS.cyan.withOpacity(.2), Colors.transparent]),
-              border: Border.all(color: _DS.cyan.withOpacity(.3)),
-            ),
-            child: const Icon(Icons.system_update_rounded,
-                color: _DS.cyan, size: 28),
-          ),
-          const SizedBox(height: 22),
-          Text(compulsory ? 'Update Required' : 'Update Available',
-              style: GoogleFonts.dmSans(
-                  color: _DS.textPrimary(dark),
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700)),
-          const SizedBox(height: 10),
-          Text(
-            compulsory
-                ? 'A newer version is required to use AI Analysis. Please update to continue.'
-                : 'A newer version is available with improvements and bug fixes.',
-            textAlign: TextAlign.center,
-            style: GoogleFonts.dmSans(
-                color: _DS.textSecondary(dark), fontSize: 13, height: 1.65),
-          ),
-          const SizedBox(height: 28),
-          SizedBox(
-            width: double.infinity,
-            child: GestureDetector(
-              onTap: () => OpenHelper.open_url(storeUrl),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                      colors: [Color(0xFF00D4FF), Color(0xFF0066FF)]),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                        color: _DS.cyan.withOpacity(.25),
-                        blurRadius: 20,
-                        offset: const Offset(0, 6))
-                  ],
-                ),
-                child: Text('Update Now',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.dmSans(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700)),
-              ),
-            ),
-          ),
-          if (!compulsory) ...[
-            const SizedBox(height: 12),
-            GestureDetector(
-              onTap: () => Navigator.of(context).pop(),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text('Maybe Later',
-                    style: GoogleFonts.dmSans(
-                        color: _DS.textSecondary(dark), fontSize: 13)),
-              ),
-            ),
-          ],
-        ]),
-      ),
+  factory StockAnalysis.fromJson(Map<String, dynamic> r) {
+    final d = r['data'] as Map<String, dynamic>;
+    final sa = r['screener_analysis'] as Map<String, dynamic>? ?? {};
+    final aa = r['alert_analysis'] as Map<String, dynamic>? ?? {};
+    final fs = r['fetch_status'] as Map<String, dynamic>? ?? {};
+    return StockAnalysis(
+      symbol: d['symbol'] ?? '',
+      companyName: d['company_name'] ?? '',
+      marketSentiment: d['market_sentiment'] ?? '',
+      oneLiner: d['one_liner'] ?? '',
+      currentPrice: _num(d['current_price']),
+      dayChangePct: _num(d['day_change_pct']),
+      supportLevels: (d['support_levels'] as List? ?? [])
+          .map((e) => PriceLevel.fromJson(e))
+          .toList(),
+      resistanceLevels: (d['resistance_levels'] as List? ?? [])
+          .map((e) => PriceLevel.fromJson(e))
+          .toList(),
+      entries: (d['entry_opportunities'] as List? ?? [])
+          .map((e) => EntryOpportunity.fromJson(e))
+          .toList(),
+      keyObservations: List<String>.from(d['key_observations'] ?? []),
+      riskFactors: List<String>.from(d['risk_factors'] ?? []),
+      volumeAnalysis: d['volume_analysis'] ?? '',
+      indicatorSummary: d['indicator_summary'] ?? '',
+      timeframe: d['timeframe'] ?? '',
+      confidence: d['confidence'] ?? '',
+      lastUpdated: d['last_updated'] ?? '',
+      cached: r['cached'] ?? false,
+      screenerAnalysis: ScreenerAnalysis.fromJson(sa),
+      alertSummary: AlertSummary.fromJson(aa),
+      fetchChecks: (fs['checks'] as List? ?? [])
+          .map((e) => FetchCheck.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      fetchFound: (fs['found_count'] ?? 0) as int,
+      fetchTotal: (fs['total'] ?? 0) as int,
     );
   }
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+/// Plain-language mood derived from sentiment + AI confidence.
+class _Mood {
+  final String headline, lean, sure;
+  final Color color;
+  final double score; // 0 falling → 1 rising
+  const _Mood(this.headline, this.lean, this.sure, this.color, this.score);
+
+  factory _Mood.from(StockAnalysis a) {
+    final s = a.marketSentiment.toLowerCase();
+    final bull = s.contains('bull');
+    final bear = s.contains('bear');
+    final c = a.confidence.toLowerCase();
+    final strength = c.contains('high')
+        ? 1.0
+        : (c.contains('med') || c.contains('mod'))
+            ? .66
+            : c.contains('low')
+                ? .33
+                : .5;
+
+    double score = .5;
+    if (bull) score = .5 + .5 * strength;
+    if (bear) score = .5 - .5 * strength;
+
+    String head;
+    if (!bull && !bear) {
+      head = 'No clear direction';
+    } else if (strength >= 1) {
+      head = bull ? 'Looks strong for buyers' : 'Looks weak right now';
+    } else if (strength >= .6) {
+      head = bull ? 'Leaning positive' : 'Leaning negative';
+    } else {
+      head = bull
+          ? 'Slightly positive, not certain'
+          : 'Slightly negative, not certain';
+    }
+
+    final sure = c.contains('high')
+        ? 'The AI is fairly sure'
+        : c.contains('low')
+            ? 'The AI is not very sure'
+            : 'The AI is somewhat sure';
+    final lean = bull
+        ? 'Leaning up'
+        : bear
+            ? 'Leaning down'
+            : 'No clear direction';
+    final color = bull
+        ? _T.up
+        : bear
+            ? _T.down
+            : _T.mid;
+    return _Mood(head, lean, sure, color, score);
+  }
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
 class StockAiAnalysisPage extends StatefulWidget {
   final String symbol;
   const StockAiAnalysisPage({super.key, required this.symbol});
@@ -433,108 +340,54 @@ class _StockAiAnalysisPageState extends State<StockAiAnalysisPage>
     with TickerProviderStateMixin {
   StockAnalysis? _analysis;
   bool _loading = true;
-  bool _showDebug = false;
+  bool _needsUpdate = false;
   String? _error;
-  int _stepIndex = 0;
+  int _msg = 0;
+  bool _deep = false;
+  int _planIdx = 0;
+  Timer? _ticker;
 
   List<_ChartPoint> _chartData = [];
   bool _chartLoading = false;
 
-  // ── Nifty-style loader animation controllers ──────────────────────────────
-  late AnimationController _spinCtrl; // dual rings
-  late AnimationController _stepCtrl; // fade per step
-  late AnimationController _contentCtrl;
-  late Animation<double> _contentFade;
-  late Animation<Offset> _contentSlide;
-  late Animation<double> _stepFade;
+  late final AnimationController _enter;
+  late final AnimationController _pulse;
 
   String _androidStoreUrl =
       'https://play.google.com/store/apps/details?id=com.optionxi.app';
   String _iosStoreUrl = 'https://apps.apple.com/in/app/optionxi/id6447514602';
+  String get _storeUrl => Platform.isIOS ? _iosStoreUrl : _androidStoreUrl;
+
+  String get _sym => _cleanSymbol(widget.symbol);
+
+  List<({IconData icon, String text})> get _messages => [
+        (icon: Icons.show_chart_rounded, text: 'Reading $_sym price history'),
+        (icon: Icons.analytics_rounded, text: 'Checking indicators and volume'),
+        (icon: Icons.radar_rounded, text: 'Scanning for chart patterns'),
+        (icon: Icons.auto_awesome_rounded, text: 'Writing your summary'),
+      ];
 
   @override
   void initState() {
     super.initState();
-    // Single spin controller (no pulse needed — rings alone look great)
-    _spinCtrl =
-        AnimationController(vsync: this, duration: const Duration(seconds: 3))
-          ..repeat();
-    _stepCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 350));
-    _contentCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 700));
-    _contentFade = CurvedAnimation(parent: _contentCtrl, curve: Curves.easeOut);
-    _contentSlide = Tween(begin: const Offset(0, .035), end: Offset.zero)
-        .animate(
-            CurvedAnimation(parent: _contentCtrl, curve: Curves.easeOutCubic));
-    _stepFade = CurvedAnimation(parent: _stepCtrl, curve: Curves.easeOut);
+    _enter = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1300));
+    _pulse = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1400))
+      ..repeat(reverse: true);
     _load();
   }
 
   @override
   void dispose() {
-    _spinCtrl.dispose();
-    _stepCtrl.dispose();
-    _contentCtrl.dispose();
+    _ticker?.cancel();
+    _enter.dispose();
+    _pulse.dispose();
     super.dispose();
   }
 
-  void _advanceStep(int i) {
-    if (!mounted) return;
-    _stepCtrl.forward(from: 0);
-    setState(() => _stepIndex = i);
-  }
-
-  // ── Fetch 30-day chart from Supabase ──────────────────────────────────────
-  Future<void> _fetchChart() async {
-    if (!mounted) return;
-    setState(() => _chartLoading = true);
-    try {
-      final supabase = Supabase.instance.client;
-      String sym = widget.symbol;
-      if (sym.startsWith('NSE:')) sym = sym.substring(4);
-      if (sym.endsWith('-EQ')) sym = sym.substring(0, sym.length - 3);
-      if (sym.endsWith('-BE')) sym = sym.substring(0, sym.length - 3);
-      if (!sym.endsWith('.NS')) sym = '$sym.NS';
-
-      final now = DateTime.now();
-      final start = now.subtract(const Duration(days: 30));
-      final response = await supabase
-          .from('stock_data')
-          .select('Timestamp, Close')
-          .eq('Stock Symbol', sym)
-          .gte('Timestamp', start.millisecondsSinceEpoch)
-          .order('Timestamp', ascending: true);
-
-      final pts = <_ChartPoint>[];
-      for (final row in response) {
-        try {
-          final ts = row['Timestamp'];
-          final cl = row['Close'];
-          if (ts == null || cl == null) continue;
-          final date = DateTime.fromMillisecondsSinceEpoch((ts as num).toInt(),
-              isUtc: false);
-          pts.add(_ChartPoint(date: date, close: (cl as num).toDouble()));
-        } catch (_) {}
-      }
-      if (mounted) setState(() => _chartData = pts);
-    } catch (_) {
-      // silently ignore — chart is supplementary
-    } finally {
-      if (mounted) setState(() => _chartLoading = false);
-    }
-  }
-
-  Future<void> _load() async {
-    if (!mounted) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-      _stepIndex = 0;
-      _chartData = [];
-    });
-
-    // Remote Config
+  // ── Store links (only fetched when an update is needed) ────────────────────
+  Future<void> _loadStoreLinks() async {
     try {
       final rc = FirebaseRemoteConfig.instance;
       await rc.setConfigSettings(RemoteConfigSettings(
@@ -548,370 +401,273 @@ class _StockAiAnalysisPageState extends State<StockAiAnalysisPage>
       if (ios.isNotEmpty) _iosStoreUrl = ios;
       if (android.isNotEmpty) _androidStoreUrl = android;
     } catch (_) {}
-
-    // Version gate
-    try {
-      final build = await _getBuildNumber();
-      final cfgRes = await http
-          .get(Uri.parse('$kApiBase/app-config'))
-          .timeout(const Duration(seconds: 10));
-      if (cfgRes.statusCode == 200) {
-        final cfg = jsonDecode(cfgRes.body) as Map<String, dynamic>;
-        final minVer = int.tryParse(cfg['min_version']?.toString() ?? '0') ?? 0;
-        final latestVer =
-            int.tryParse(cfg['latest_version']?.toString() ?? '0') ?? 0;
-        if (!mounted) return;
-        final dark = Theme.of(context).brightness == Brightness.dark;
-        if (build < minVer) {
-          setState(() => _loading = false);
-          _showUpdateDialog(context, dark,
-              compulsory: true,
-              storeUrl: Platform.isIOS ? _iosStoreUrl : _androidStoreUrl);
-          return;
-        } else if (build < latestVer) {
-          _showUpdateDialog(context, dark,
-              compulsory: false,
-              storeUrl: Platform.isIOS ? _iosStoreUrl : _androidStoreUrl);
-        }
-      }
-    } catch (_) {}
-
-    // Animated step walk
-    for (int i = 1; i < _kSteps.length - 1; i++) {
-      await Future.delayed(const Duration(milliseconds: 420));
-      _advanceStep(i);
-    }
-
-    try {
-      final res = await http
-          .get(Uri.parse('$kApiBase/analysis/${widget.symbol}'))
-          .timeout(const Duration(seconds: 60));
-
-      _advanceStep(_kSteps.length - 1);
-      await Future.delayed(const Duration(milliseconds: 380));
-
-      if (res.statusCode == 200) {
-        if (!mounted) return;
-        setState(() {
-          _analysis = StockAnalysis.fromJson(
-              jsonDecode(res.body) as Map<String, dynamic>);
-          _loading = false;
-        });
-        _contentCtrl.forward(from: 0);
-        _fetchChart();
-      } else {
-        final body = jsonDecode(res.body) as Map<String, dynamic>;
-        if (!mounted) return;
-        setState(() {
-          _error =
-              body['detail']?.toString() ?? 'Server error ${res.statusCode}';
-          _loading = false;
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
-    }
   }
 
-  bool get _dark => Theme.of(context).brightness == Brightness.dark;
+  /// Returns true when the app is too old to continue.
+  Future<bool> _versionGate() async {
+    try {
+      final build = await _getBuildNumber();
+      final res = await http
+          .get(Uri.parse('$kApiBase/app-config'))
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) return false;
+      final cfg = jsonDecode(res.body) as Map<String, dynamic>;
+      final minVer = int.tryParse(cfg['min_version']?.toString() ?? '0') ?? 0;
+      final latest =
+          int.tryParse(cfg['latest_version']?.toString() ?? '0') ?? 0;
+      if (build < minVer) {
+        await _loadStoreLinks();
+        return true;
+      }
+      if (build < latest) {
+        await _loadStoreLinks();
+        if (mounted) _showOptionalUpdate();
+      }
+    } catch (_) {}
+    return false;
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    final dark = _dark;
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
-      child: Scaffold(
-        backgroundColor: _DS.bg(dark),
-        body: SafeArea(
-          child: _loading
-              ? _buildLoader(dark)
-              : _error != null
-                  ? _buildError(dark)
-                  : _buildContent(dark),
+  void _showOptionalUpdate() {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: _T.surface(ctx),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.system_update_rounded, color: _T.link, size: 36),
+            const SizedBox(height: 14),
+            Text('A new version is ready',
+                style: _ts(ctx, s: 18, w: FontWeight.w800)),
+            const SizedBox(height: 6),
+            Text('It has improvements and bug fixes.',
+                textAlign: TextAlign.center,
+                style: _ts(ctx, s: 13.5, color: _T.sub(ctx))),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => OpenHelper.open_url(_storeUrl),
+                style: FilledButton.styleFrom(
+                  backgroundColor: _T.link,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: Text('Update now',
+                    style: _ts(ctx, w: FontWeight.w700, color: Colors.white)),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child:
+                  Text('Not now', style: _ts(ctx, s: 13, color: _T.sub(ctx))),
+            ),
+          ]),
         ),
       ),
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // LOADER — Nifty-style dual-ring spinner + step-list card
-  // ═══════════════════════════════════════════════════════════════════════════
-  Widget _buildLoader(bool dark) {
-    final step = _kSteps[_stepIndex.clamp(0, _kSteps.length - 1)];
-    final pct = (_stepIndex + 1) / _kSteps.length;
+  // ── 30-day chart from Supabase ─────────────────────────────────────────────
+  Future<void> _fetchChart() async {
+    if (!mounted) return;
+    setState(() => _chartLoading = true);
+    try {
+      String sym = widget.symbol;
+      if (sym.startsWith('NSE:')) sym = sym.substring(4);
+      if (sym.endsWith('-EQ')) sym = sym.substring(0, sym.length - 3);
+      if (sym.endsWith('-BE')) sym = sym.substring(0, sym.length - 3);
+      if (!sym.endsWith('.NS')) sym = '$sym.NS';
 
-    // Accent colour: cyan in dark, blue in light — matches overall stock theme
-    final accent = dark ? _DS.cyan : const Color(0xFF2563EB);
-    final accent2 = dark ? _DS.violet : const Color(0xFF7C3AED);
+      final start = DateTime.now().subtract(const Duration(days: 30));
+      final response = await Supabase.instance.client
+          .from('stock_data')
+          .select('Timestamp, Close')
+          .eq('Stock Symbol', sym)
+          .gte('Timestamp', start.millisecondsSinceEpoch)
+          .order('Timestamp', ascending: true);
 
-    return Column(children: [
-      _TopBar(dark: dark, symbol: widget.symbol, trailing: const SizedBox()),
-      Expanded(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(children: [
-            const SizedBox(height: 32),
-
-            // ── Dual-ring spinner ──────────────────────────────────────────
-            SizedBox(
-              width: 120,
-              height: 120,
-              child: AnimatedBuilder(
-                animation: _spinCtrl,
-                builder: (_, __) =>
-                    Stack(alignment: Alignment.center, children: [
-                  // Outer ring
-                  Transform.rotate(
-                    angle: _spinCtrl.value * 2 * math.pi,
-                    child: CustomPaint(
-                      size: const Size(120, 120),
-                      painter: _RingPainter(
-                          color: accent, strokeWidth: 2.5, dashFraction: .35),
-                    ),
-                  ),
-                  // Inner ring (counter-rotate)
-                  Transform.rotate(
-                    angle: -_spinCtrl.value * 2 * math.pi * .6,
-                    child: CustomPaint(
-                      size: const Size(84, 84),
-                      painter: _RingPainter(
-                          color: accent2, strokeWidth: 1.5, dashFraction: .45),
-                    ),
-                  ),
-                  // Centre icon disc
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _DS.card(dark),
-                      border: Border.all(color: _DS.border(dark), width: 1.5),
-                      boxShadow: [
-                        BoxShadow(
-                            color: accent.withOpacity(dark ? .15 : .10),
-                            blurRadius: 16),
-                      ],
-                    ),
-                    child: Icon(step.icon, color: accent, size: 22),
-                  ),
-                ]),
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // ── Step label ────────────────────────────────────────────────
-            FadeTransition(
-              opacity: _stepFade,
-              child: Column(children: [
-                Text(widget.symbol,
-                    style: GoogleFonts.jetBrainsMono(
-                        color: accent,
-                        fontSize: 11,
-                        letterSpacing: 3,
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(height: 10),
-                Text(step.label,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.dmSans(
-                        color: _DS.textPrimary(dark),
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        height: 1.2)),
-                const SizedBox(height: 5),
-                Text(step.sub,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.dmSans(
-                        color: _DS.textSecondary(dark),
-                        fontSize: 13,
-                        height: 1.5)),
-              ]),
-            ),
-
-            const SizedBox(height: 28),
-
-            // ── Progress bar ──────────────────────────────────────────────
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: pct,
-                minHeight: 3,
-                backgroundColor: _DS.border(dark),
-                valueColor: AlwaysStoppedAnimation(accent),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text('${_stepIndex + 1} of ${_kSteps.length}',
-                  style: GoogleFonts.jetBrainsMono(
-                      color: _DS.textTertiary(dark), fontSize: 10)),
-              Text('${(pct * 100).round()}%',
-                  style: GoogleFonts.jetBrainsMono(
-                      color: accent,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600)),
-            ]),
-
-            const SizedBox(height: 24),
-
-            // ── Step list card ────────────────────────────────────────────
-            Container(
-              decoration: BoxDecoration(
-                color: _DS.card(dark),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _DS.border(dark)),
-                boxShadow: [
-                  BoxShadow(
-                      color: Colors.black.withOpacity(dark ? .25 : .04),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4)),
-                ],
-              ),
-              child: Column(
-                children: List.generate(_kSteps.length, (i) {
-                  final state = i < _stepIndex
-                      ? 0
-                      : i == _stepIndex
-                          ? 1
-                          : 2;
-                  final Color c;
-                  if (state == 0)
-                    c = _DS.green(dark);
-                  else if (state == 1)
-                    c = accent;
-                  else
-                    c = _DS.textTertiary(dark);
-
-                  return Column(children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 250),
-                      color: state == 1
-                          ? accent.withOpacity(dark ? .05 : .04)
-                          : Colors.transparent,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 11),
-                        child: Row(children: [
-                          Container(
-                            width: 30,
-                            height: 30,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              color: c.withOpacity(.10),
-                            ),
-                            child: Icon(_kSteps[i].icon, size: 14, color: c),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(_kSteps[i].label,
-                                style: GoogleFonts.dmSans(
-                                    color: c,
-                                    fontSize: 13,
-                                    fontWeight: state == 1
-                                        ? FontWeight.w600
-                                        : FontWeight.w400)),
-                          ),
-                          if (state == 0)
-                            Icon(Icons.check_rounded,
-                                color: _DS.green(dark), size: 15)
-                          else if (state == 1)
-                            SizedBox(
-                                width: 15,
-                                height: 15,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 1.8, color: accent))
-                          else
-                            Container(
-                                width: 6,
-                                height: 6,
-                                decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: _DS.border(dark))),
-                        ]),
-                      ),
-                    ),
-                    if (i < _kSteps.length - 1)
-                      Divider(
-                          height: 1,
-                          indent: 58,
-                          endIndent: 16,
-                          color: _DS.divider(dark)),
-                  ]);
-                }),
-              ),
-            ),
-
-            const SizedBox(height: 32),
-          ]),
-        ),
-      ),
-    ]);
+      final pts = <_ChartPoint>[];
+      for (final row in response) {
+        try {
+          final ts = row['Timestamp'];
+          final cl = row['Close'];
+          if (ts == null || cl == null) continue;
+          pts.add(_ChartPoint(
+              date: DateTime.fromMillisecondsSinceEpoch((ts as num).toInt()),
+              close: (cl as num).toDouble()));
+        } catch (_) {}
+      }
+      if (mounted) setState(() => _chartData = pts);
+    } catch (_) {
+      // chart is supplementary
+    } finally {
+      if (mounted) setState(() => _chartLoading = false);
+    }
   }
 
-  // ─── Error ──────────────────────────────────────────────────────────────────
-  Widget _buildError(bool dark) {
+  Future<void> _load({bool silent = false}) async {
+    if (!mounted) return;
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+        _needsUpdate = false;
+        _msg = 0;
+        _chartData = [];
+      });
+      _ticker?.cancel();
+      _ticker = Timer.periodic(const Duration(milliseconds: 2200), (_) {
+        if (mounted && _msg < _messages.length - 1) setState(() => _msg++);
+      });
+    }
+
+    // Start the analysis right away; the version check runs alongside it.
+    final req = http
+        .get(Uri.parse('$kApiBase/analysis/${widget.symbol}'))
+        .timeout(const Duration(seconds: 60));
+    req.ignore();
+
+    try {
+      if (!silent && await _versionGate()) {
+        if (mounted) {
+          setState(() {
+            _needsUpdate = true;
+            _loading = false;
+          });
+        }
+        return;
+      }
+
+      final res = await req;
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final a = StockAnalysis.fromJson(
+            jsonDecode(res.body) as Map<String, dynamic>);
+        setState(() {
+          _analysis = a;
+          _loading = false;
+          _error = null;
+          _planIdx = 0;
+        });
+        if (!silent) _enter.forward(from: 0);
+        _fetchChart();
+      } else {
+        final b = jsonDecode(res.body) as Map<String, dynamic>;
+        if (!silent || _analysis == null) {
+          setState(() {
+            _error =
+                b['detail']?.toString() ?? 'Server error ${res.statusCode}';
+            _loading = false;
+          });
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (!silent || _analysis == null) {
+        setState(() {
+          _error = e.toString();
+          _loading = false;
+        });
+      }
+    } finally {
+      _ticker?.cancel();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = _T.dark(context);
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        backgroundColor: _T.bg(context),
+        body: SafeArea(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: _loading
+                ? KeyedSubtree(key: const ValueKey('l'), child: _loader())
+                : _needsUpdate
+                    ? KeyedSubtree(
+                        key: const ValueKey('u'), child: _updateView())
+                    : _error != null
+                        ? KeyedSubtree(
+                            key: const ValueKey('e'), child: _errorView())
+                        : _analysis == null
+                            ? KeyedSubtree(
+                                key: const ValueKey('n'), child: _errorView())
+                            : KeyedSubtree(
+                                key: const ValueKey('c'), child: _content()),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Loading ────────────────────────────────────────────────────────────────
+  Widget _loader() {
+    final msgs = _messages;
+    final m = msgs[_msg.clamp(0, msgs.length - 1)];
     return Column(children: [
-      _TopBar(dark: dark, symbol: widget.symbol, trailing: const SizedBox()),
+      _TopBar(title: _sym),
       Expanded(
         child: Center(
           child: Padding(
             padding: const EdgeInsets.all(32),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                width: 80,
-                height: 80,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _DS.red.withOpacity(.08),
-                  border: Border.all(color: _DS.red.withOpacity(.25)),
+              AnimatedBuilder(
+                animation: _pulse,
+                builder: (_, __) => Container(
+                  width: 92 + 16 * _pulse.value,
+                  height: 92 + 16 * _pulse.value,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _T.link.withOpacity(.06 + .06 * _pulse.value),
+                  ),
+                  child: Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                        shape: BoxShape.circle, color: _T.surface(context)),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      child: Icon(m.icon,
+                          key: ValueKey(_msg), color: _T.link, size: 26),
+                    ),
+                  ),
                 ),
-                child: const Icon(Icons.error_outline_rounded,
-                    color: _DS.red, size: 34),
-              ),
-              const SizedBox(height: 24),
-              Text('Analysis Failed',
-                  style: GoogleFonts.dmSans(
-                      color: _DS.textPrimary(dark),
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700)),
-              const SizedBox(height: 8),
-              Text('Something went wrong while fetching the analysis.',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.dmSans(
-                      color: _DS.textSecondary(dark),
-                      fontSize: 14,
-                      height: 1.6)),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: _DS.red.withOpacity(.05),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _DS.red.withOpacity(.12)),
-                ),
-                child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(Icons.terminal_rounded,
-                          color: _DS.red, size: 13),
-                      const SizedBox(width: 8),
-                      Expanded(
-                          child: Text(_error!,
-                              style: GoogleFonts.jetBrainsMono(
-                                  color: _DS.textSecondary(dark),
-                                  fontSize: 11,
-                                  height: 1.6))),
-                    ]),
               ),
               const SizedBox(height: 28),
-              _GradientButton(
-                  label: 'Retry Analysis',
-                  icon: Icons.refresh_rounded,
-                  onTap: _load),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: Text(m.text,
+                    key: ValueKey(_msg),
+                    textAlign: TextAlign.center,
+                    style: _ts(context, s: 18, w: FontWeight.w700)),
+              ),
+              const SizedBox(height: 8),
+              Text('Usually takes a few seconds',
+                  style: _ts(context, s: 13, color: _T.sub(context))),
+              const SizedBox(height: 22),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: List.generate(
+                  msgs.length,
+                  (i) => AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: i == _msg ? 22 : 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(4),
+                      color: i <= _msg ? _T.link : _T.hair(context),
+                    ),
+                  ),
+                ),
+              ),
             ]),
           ),
         ),
@@ -919,1267 +675,1202 @@ class _StockAiAnalysisPageState extends State<StockAiAnalysisPage>
     ]);
   }
 
-  // ─── Content ────────────────────────────────────────────────────────────────
-  Widget _buildContent(bool dark) {
-    if (_analysis == null) {
-      return Column(children: [
-        _TopBar(dark: dark, symbol: widget.symbol, trailing: const SizedBox()),
+  // ── Update required ────────────────────────────────────────────────────────
+  Widget _updateView() => Column(children: [
+        _TopBar(title: _sym),
         Expanded(
-            child: Center(
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.sentiment_dissatisfied_rounded,
-              color: _DS.textTertiary(dark), size: 40),
-          const SizedBox(height: 16),
-          Text('No data available',
-              style: GoogleFonts.dmSans(
-                  color: _DS.textSecondary(dark), fontSize: 16)),
-          const SizedBox(height: 24),
-          _GradientButton(
-              label: 'Try Again', icon: Icons.refresh_rounded, onTap: _load),
-        ]))),
-      ]);
-    }
-
-    final a = _analysis!;
-    return FadeTransition(
-      opacity: _contentFade,
-      child: SlideTransition(
-        position: _contentSlide,
-        child: CustomScrollView(
-          physics: const BouncingScrollPhysics(),
-          slivers: [
-            _buildAppBar(a, dark),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 100),
-              sliver: SliverList(
-                  delegate: SliverChildListDelegate([
-                _DisclaimerBanner(dark: dark),
-                const SizedBox(height: 20),
-                _OneLinerCard(text: a.oneLiner, dark: dark),
-                const SizedBox(height: 24),
-                _PriceChartCard(
-                    analysis: a,
-                    chartData: _chartData,
-                    chartLoading: _chartLoading,
-                    dark: dark,
-                    symbol: widget.symbol),
-                const SizedBox(height: 24),
-                _SectionHeader(
-                    title: 'Screener Signals',
-                    icon: Icons.radar_rounded,
-                    dark: dark),
-                const SizedBox(height: 10),
-                _ScreenerCard(sa: a.screenerAnalysis, dark: dark),
-                const SizedBox(height: 24),
-                if (a.alertSummary.triggeredCount > 0 ||
-                    a.alertSummary.pendingCount > 0) ...[
-                  _SectionHeader(
-                      title: 'Active Alerts',
-                      icon: Icons.notifications_active_rounded,
-                      dark: dark),
-                  const SizedBox(height: 10),
-                  _AlertCard(alert: a.alertSummary, dark: dark),
-                  const SizedBox(height: 24),
-                ],
-                _SectionHeader(
-                    title: 'Entry Opportunities',
-                    icon: Icons.login_rounded,
-                    dark: dark),
-                const SizedBox(height: 10),
-                ...a.entries.asMap().entries.map((e) => Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child:
-                        _EntryCard(entry: e.value, dark: dark, index: e.key))),
-                const SizedBox(height: 12),
-                _SectionHeader(
-                    title: 'Support & Resistance',
-                    icon: Icons.layers_rounded,
-                    dark: dark),
-                const SizedBox(height: 10),
-                _SRCard(
-                    supports: a.supportLevels,
-                    resistances: a.resistanceLevels,
-                    dark: dark),
-                const SizedBox(height: 24),
-                _SectionHeader(
-                    title: 'Key Observations',
-                    icon: Icons.lightbulb_rounded,
-                    dark: dark),
-                const SizedBox(height: 10),
-                _ObsCard(items: a.keyObservations, dark: dark),
-                const SizedBox(height: 24),
-                _SectionHeader(
-                    title: 'Indicators & Volume',
-                    icon: Icons.bar_chart_rounded,
-                    dark: dark),
-                const SizedBox(height: 10),
-                _TextCard(
-                    content: a.indicatorSummary,
-                    icon: Icons.analytics_rounded,
-                    dark: dark),
-                const SizedBox(height: 8),
-                _TextCard(
-                    content: a.volumeAnalysis,
-                    icon: Icons.water_rounded,
-                    label: 'Volume',
-                    dark: dark),
-                const SizedBox(height: 24),
-                _SectionHeader(
-                    title: 'Risk Factors',
-                    icon: Icons.warning_amber_rounded,
-                    dark: dark,
-                    accent: _DS.red),
-                const SizedBox(height: 10),
-                _RiskCard(risks: a.riskFactors, dark: dark),
-                const SizedBox(height: 24),
-                _SectionHeader(
-                    title: 'Data Sources',
-                    icon: Icons.storage_rounded,
-                    dark: dark),
-                const SizedBox(height: 10),
-                _FetchStatusCard(
-                    checks: a.fetchChecks,
-                    found: a.fetchFound,
-                    total: a.fetchTotal,
-                    dark: dark,
-                    expanded: _showDebug,
-                    onToggle: () => setState(() => _showDebug = !_showDebug)),
-                const SizedBox(height: 24),
-                _MetaRow(analysis: a, onRefresh: _load, dark: dark),
-                const SizedBox(height: 8),
-              ])),
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.system_update_rounded,
+                    size: 48, color: _T.link),
+                const SizedBox(height: 16),
+                Text('Please update the app',
+                    style: _ts(context, s: 20, w: FontWeight.w800)),
+                const SizedBox(height: 6),
+                Text('You need the latest version to use AI analysis.',
+                    textAlign: TextAlign.center,
+                    style: _ts(context, s: 14, color: _T.sub(context))),
+                const SizedBox(height: 22),
+                FilledButton(
+                  onPressed: () => OpenHelper.open_url(_storeUrl),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _T.link,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 28, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: Text('Update now',
+                      style: _ts(context,
+                          w: FontWeight.w700, color: Colors.white)),
+                ),
+              ]),
             ),
-          ],
+          ),
+        ),
+      ]);
+
+  // ── Error ──────────────────────────────────────────────────────────────────
+  Widget _errorView() => Column(children: [
+        _TopBar(title: _sym),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.cloud_off_rounded, size: 44, color: _T.sub(context)),
+                const SizedBox(height: 16),
+                Text("Couldn't load the analysis",
+                    textAlign: TextAlign.center,
+                    style: _ts(context, s: 18, w: FontWeight.w700)),
+                const SizedBox(height: 6),
+                Text('Check your internet connection and try again.',
+                    textAlign: TextAlign.center,
+                    style: _ts(context, s: 14, color: _T.sub(context))),
+                if (_error != null) ...[
+                  const SizedBox(height: 14),
+                  Text(_error!,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: _ts(context, s: 11, color: _T.sub(context))),
+                ],
+                const SizedBox(height: 22),
+                FilledButton.icon(
+                  onPressed: _load,
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: Text('Try again',
+                      style: _ts(context,
+                          w: FontWeight.w700, color: Colors.white)),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _T.link,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 22, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ]);
+
+  // ── Content ────────────────────────────────────────────────────────────────
+  Widget _content() {
+    final a = _analysis!;
+    final mood = _Mood.from(a);
+
+    final items = <Widget>[
+      _Hero(analysis: a, mood: mood, symbol: _sym),
+      const _SectionTitle('Why it looks this way', 'Tap any card to see more'),
+      _PriceFold(
+          analysis: a,
+          chartData: _chartData,
+          chartLoading: _chartLoading,
+          symbol: _sym),
+      _ScannersFold(sa: a.screenerAnalysis),
+      if (a.alertSummary.triggeredCount > 0 || a.alertSummary.pendingCount > 0)
+        _AlertsFold(alert: a.alertSummary),
+      if (a.indicatorSummary.isNotEmpty || a.volumeAnalysis.isNotEmpty)
+        _IndicatorsFold(
+            indicators: a.indicatorSummary, volume: a.volumeAnalysis),
+      const _SectionTitle('What could you do?', 'Pick a style to see its plan'),
+      _PlanSection(
+        entries: a.entries,
+        selected: _planIdx,
+        onSelect: (i) => setState(() => _planIdx = i),
+      ),
+      _DeepToggle(open: _deep, onTap: () => setState(() => _deep = !_deep)),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child:
+            _deep ? _deepSections(a) : const SizedBox(width: double.infinity),
+      ),
+      _Footer(analysis: a),
+    ];
+
+    return Column(children: [
+      _TopBar(
+        title: a.companyName.isNotEmpty ? a.companyName : _sym,
+        subtitle: a.companyName.isNotEmpty ? _sym : null,
+        onRefresh: _load,
+      ),
+      Expanded(
+        child: RefreshIndicator(
+          color: _T.link,
+          onRefresh: () => _load(silent: true),
+          child: ListView.separated(
+            physics: const AlwaysScrollableScrollPhysics(
+                parent: BouncingScrollPhysics()),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 48),
+            itemCount: items.length,
+            separatorBuilder: (_, i) =>
+                SizedBox(height: items[i + 1] is _SectionTitle ? 22 : 10),
+            itemBuilder: (_, i) =>
+                _Reveal(anim: _enter, index: i, child: items[i]),
+          ),
         ),
       ),
-    );
+    ]);
   }
 
-  SliverAppBar _buildAppBar(StockAnalysis a, bool dark) {
-    final isUp = a.dayChangePct >= 0;
-    final changeColor = isUp ? _DS.green(dark) : _DS.red;
-    return SliverAppBar(
-      backgroundColor: _DS.bg(dark),
-      elevation: 0,
-      pinned: true,
-      expandedHeight: 0,
-      automaticallyImplyLeading: false,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 10, top: 6, bottom: 6),
-        child: _BackBtn(dark: dark),
-      ),
-      title: Row(children: [
-        Text(a.symbol,
-            style: GoogleFonts.jetBrainsMono(
-                color: _DS.textPrimary(dark),
-                fontSize: 18,
-                fontWeight: FontWeight.w700)),
-        const SizedBox(width: 10),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-              color: changeColor.withOpacity(.1),
-              borderRadius: BorderRadius.circular(20)),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(
-                isUp
-                    ? Icons.arrow_upward_rounded
-                    : Icons.arrow_downward_rounded,
-                size: 11,
-                color: changeColor),
-            const SizedBox(width: 3),
-            Text('${isUp ? "+" : ""}${a.dayChangePct.toStringAsFixed(2)}%',
-                style: GoogleFonts.jetBrainsMono(
-                    color: changeColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600)),
-          ]),
-        ),
-      ]),
-      actions: [
-        GestureDetector(
-          onTap: _load,
-          child: Container(
-            margin: const EdgeInsets.only(right: 12, top: 8, bottom: 8),
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-                color: _DS.surface(dark),
-                borderRadius: BorderRadius.circular(11),
-                border: Border.all(color: _DS.border(dark))),
-            child: Icon(Icons.refresh_rounded,
-                color: dark ? _DS.cyan : const Color(0xFF2563EB), size: 18),
+  Widget _deepSections(StockAnalysis a) => Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Column(children: [
+          _Fold(
+            icon: Icons.layers_rounded,
+            color: _T.sub(context),
+            title: 'Price levels to watch',
+            child: _LevelsBlock(
+                supports: a.supportLevels, resistances: a.resistanceLevels),
           ),
-        ),
-      ],
-      bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(1),
-        child: Container(
-          height: 1,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(colors: [
-              Colors.transparent,
-              _DS.divider(dark),
-              Colors.transparent
-            ]),
-          ),
-        ),
+          if (a.keyObservations.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _Fold(
+              icon: Icons.lightbulb_outline_rounded,
+              color: _T.mid,
+              title: 'What the AI noticed',
+              child: _BulletList(items: a.keyObservations, color: _T.mid),
+            ),
+          ],
+          if (a.riskFactors.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _Fold(
+              icon: Icons.warning_amber_rounded,
+              color: _T.down,
+              title: 'Things that could go wrong',
+              child: _BulletList(items: a.riskFactors, color: _T.down),
+            ),
+          ],
+          if (a.fetchTotal > 0) ...[
+            const SizedBox(height: 10),
+            _Fold(
+              icon: Icons.storage_rounded,
+              color: a.fetchFound == a.fetchTotal ? _T.up : _T.mid,
+              title: 'How complete is the data?',
+              answer: '${a.fetchFound} of ${a.fetchTotal} sources worked',
+              child: _SourcesBlock(checks: a.fetchChecks),
+            ),
+          ],
+        ]),
+      );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Shared building blocks
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _Reveal extends StatelessWidget {
+  final Animation<double> anim;
+  final int index;
+  final Widget child;
+  const _Reveal({required this.anim, required this.index, required this.child});
+  @override
+  Widget build(BuildContext context) {
+    final start = (index * .09).clamp(0.0, .6);
+    final a = CurvedAnimation(
+        parent: anim,
+        curve: Interval(start, start + .4, curve: Curves.easeOutCubic));
+    return FadeTransition(
+      opacity: a,
+      child: SlideTransition(
+        position:
+            Tween(begin: const Offset(0, .05), end: Offset.zero).animate(a),
+        child: child,
       ),
     );
   }
 }
 
-// ─── Ring Painter (same as Nifty page) ───────────────────────────────────────
-class _RingPainter extends CustomPainter {
+class _TopBar extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final VoidCallback? onRefresh;
+  const _TopBar({required this.title, this.subtitle, this.onRefresh});
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Row(children: [
+          _RoundBtn(
+              icon: Icons.arrow_back_ios_new_rounded,
+              onTap: () => Navigator.of(context).maybePop()),
+          const SizedBox(width: 12),
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _ts(context, s: 18, w: FontWeight.w800, h: 1.2)),
+              if (subtitle != null)
+                Text(subtitle!,
+                    style: _ts(context, s: 12, color: _T.sub(context))),
+            ]),
+          ),
+          if (onRefresh != null)
+            _RoundBtn(icon: Icons.refresh_rounded, onTap: onRefresh!),
+        ]),
+      );
+}
+
+class _RoundBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _RoundBtn({required this.icon, required this.onTap});
+  @override
+  Widget build(BuildContext context) => Material(
+        color: _T.surface(context),
+        shape: CircleBorder(side: BorderSide(color: _T.hair(context))),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Icon(icon, size: 16, color: _T.ink(context))),
+        ),
+      );
+}
+
+class _SectionTitle extends StatelessWidget {
+  final String title;
+  final String? hint;
+  const _SectionTitle(this.title, this.hint);
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(left: 2),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: _ts(context, s: 17, w: FontWeight.w800)),
+          if (hint != null)
+            Text(hint!, style: _ts(context, s: 12.5, color: _T.sub(context))),
+        ]),
+      );
+}
+
+class _Fold extends StatefulWidget {
+  final IconData icon;
   final Color color;
-  final double strokeWidth, dashFraction;
-  const _RingPainter(
-      {required this.color,
-      required this.strokeWidth,
-      required this.dashFraction});
+  final String title;
+  final String? answer;
+  final Widget child;
+  const _Fold(
+      {required this.icon,
+      required this.color,
+      required this.title,
+      required this.child,
+      this.answer});
+  @override
+  State<_Fold> createState() => _FoldState();
+}
+
+class _FoldState extends State<_Fold> {
+  bool _open = false;
+  @override
+  Widget build(BuildContext context) {
+    final hasAnswer = widget.answer != null;
+    return Material(
+      color: _T.surface(context),
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: _T.hair(context)),
+      ),
+      child: Column(children: [
+        InkWell(
+          onTap: () => setState(() => _open = !_open),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                    color: widget.color.withOpacity(.12),
+                    borderRadius: BorderRadius.circular(12)),
+                child: Icon(widget.icon, color: widget.color, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(widget.title,
+                          style: hasAnswer
+                              ? _ts(context, s: 12.5, color: _T.sub(context))
+                              : _ts(context, s: 15, w: FontWeight.w700)),
+                      if (hasAnswer) ...[
+                        const SizedBox(height: 2),
+                        Text(widget.answer!,
+                            style: _ts(context, s: 15.5, w: FontWeight.w800)),
+                      ],
+                    ]),
+              ),
+              AnimatedRotation(
+                turns: _open ? .5 : 0,
+                duration: const Duration(milliseconds: 250),
+                child: Icon(Icons.keyboard_arrow_down_rounded,
+                    color: _T.sub(context)),
+              ),
+            ]),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: _open
+              ? Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+                  child:
+                      Align(alignment: Alignment.topLeft, child: widget.child),
+                )
+              : const SizedBox(width: double.infinity),
+        ),
+      ]),
+    );
+  }
+}
+
+class _Note extends StatelessWidget {
+  final String text;
+  const _Note(this.text);
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+            color: _T.alt(context), borderRadius: BorderRadius.circular(12)),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(Icons.info_outline_rounded, size: 15, color: _T.sub(context)),
+          const SizedBox(width: 8),
+          Expanded(
+              child: Text(text,
+                  style:
+                      _ts(context, s: 12.5, color: _T.sub(context), h: 1.5))),
+        ]),
+      );
+}
+
+class _Para extends StatelessWidget {
+  final String text;
+  const _Para(this.text);
+  @override
+  Widget build(BuildContext context) =>
+      Text(text, style: _ts(context, s: 13.5, h: 1.55));
+}
+
+class _AiLine extends StatelessWidget {
+  final String text;
+  const _AiLine(this.text);
+  @override
+  Widget build(BuildContext context) =>
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.auto_awesome_rounded, size: 14, color: _T.link),
+        const SizedBox(width: 8),
+        Expanded(
+            child: Text(text,
+                style: _ts(context, s: 13, color: _T.sub(context), h: 1.55))),
+      ]);
+}
+
+// ─── Hero ─────────────────────────────────────────────────────────────────────
+class _Hero extends StatelessWidget {
+  final StockAnalysis analysis;
+  final _Mood mood;
+  final String symbol;
+  const _Hero(
+      {required this.analysis, required this.mood, required this.symbol});
+
+  @override
+  Widget build(BuildContext context) {
+    final up = analysis.dayChangePct >= 0;
+    final cc = up ? _T.up : _T.down;
+    final fill = Color.alphaBlend(
+        mood.color.withOpacity(_T.dark(context) ? .14 : .09),
+        _T.surface(context));
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
+      decoration: BoxDecoration(
+        color: fill,
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: mood.color.withOpacity(.3)),
+      ),
+      child: Column(children: [
+        Row(children: [
+          Text(symbol, style: _ts(context, s: 13, color: _T.sub(context))),
+          const Spacer(),
+          Text('₹${_n2.format(analysis.currentPrice)}',
+              style: _ts(context, s: 15, w: FontWeight.w800, figures: true)),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+                color: cc.withOpacity(.14),
+                borderRadius: BorderRadius.circular(8)),
+            child: Text(
+                '${up ? "+" : ""}${analysis.dayChangePct.toStringAsFixed(2)}%',
+                style: _ts(context,
+                    s: 12, w: FontWeight.w800, color: cc, figures: true)),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: .5, end: mood.score),
+          duration: const Duration(milliseconds: 1400),
+          curve: Curves.easeOutBack,
+          builder: (_, v, __) => SizedBox(
+            width: 250,
+            height: 132,
+            child: CustomPaint(
+              painter: _GaugePainter(
+                  value: v, knob: mood.color, ring: _T.surface(context)),
+              child: Align(
+                alignment: const Alignment(0, .78),
+                child: Text(mood.lean,
+                    style: _ts(context, s: 13, color: _T.sub(context))),
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child:
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text('Falling', style: _ts(context, s: 11.5, color: _T.down)),
+            Text('Rising', style: _ts(context, s: 11.5, color: _T.up)),
+          ]),
+        ),
+        const SizedBox(height: 12),
+        Text(mood.headline,
+            textAlign: TextAlign.center,
+            style: _ts(context, s: 24, w: FontWeight.w800, h: 1.2)),
+        const SizedBox(height: 4),
+        Text(mood.sure, style: _ts(context, s: 12.5, color: _T.sub(context))),
+        if (analysis.oneLiner.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(analysis.oneLiner,
+              textAlign: TextAlign.center,
+              style: _ts(context, s: 13.5, color: _T.sub(context), h: 1.55)),
+        ],
+      ]),
+    );
+  }
+}
+
+class _GaugePainter extends CustomPainter {
+  final double value;
+  final Color knob, ring;
+  const _GaugePainter(
+      {required this.value, required this.knob, required this.ring});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth
-      ..strokeCap = StrokeCap.round;
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width / 2;
-    final arc = 2 * math.pi * dashFraction;
-    final gap = 2 * math.pi * (1 - dashFraction) / 3;
-    for (int i = 0; i < 3; i++) {
-      paint.color = color.withOpacity(.6 - i * .15);
-      canvas.drawArc(
-        Rect.fromCircle(center: center, radius: radius),
-        i * (arc + gap),
-        arc,
+    const stroke = 16.0;
+    final center = Offset(size.width / 2, size.height - 14);
+    final radius = size.width / 2 - 18;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    canvas.drawArc(
+        rect,
+        math.pi,
+        math.pi,
         false,
-        paint,
-      );
-    }
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = stroke
+          ..strokeCap = StrokeCap.round
+          ..shader = const SweepGradient(
+            startAngle: math.pi,
+            endAngle: 2 * math.pi,
+            colors: [_T.down, _T.mid, _T.up],
+          ).createShader(rect));
+
+    final v = value.clamp(0.0, 1.0);
+    final a = math.pi + v * math.pi;
+    final p = center + Offset(math.cos(a), math.sin(a)) * radius;
+    canvas.drawCircle(p, 13, Paint()..color = ring);
+    canvas.drawCircle(p, 8, Paint()..color = knob);
   }
 
   @override
-  bool shouldRepaint(_RingPainter old) => false;
+  bool shouldRepaint(_GaugePainter o) =>
+      o.value != value || o.knob != knob || o.ring != ring;
 }
 
-// ─── Price Chart Card ─────────────────────────────────────────────────────────
-class _PriceChartCard extends StatelessWidget {
+// ─── "Why" cards ──────────────────────────────────────────────────────────────
+class _PriceFold extends StatelessWidget {
   final StockAnalysis analysis;
   final List<_ChartPoint> chartData;
-  final bool chartLoading, dark;
+  final bool chartLoading;
   final String symbol;
+  const _PriceFold(
+      {required this.analysis,
+      required this.chartData,
+      required this.chartLoading,
+      required this.symbol});
 
-  const _PriceChartCard({
-    required this.analysis,
-    required this.chartData,
-    required this.chartLoading,
-    required this.dark,
-    required this.symbol,
-  });
-
-  double get _progress {
-    if (chartData.isEmpty) return analysis.dayChangePct >= 0 ? 0.7 : 0.3;
-    final prices = chartData.map((p) => p.close).toList();
-    final low = prices.reduce((a, b) => a < b ? a : b);
-    final high = prices.reduce((a, b) => a > b ? a : b);
-    final span = high - low;
-    if (span == 0) return 0.5;
-    return ((analysis.currentPrice - low) / span).clamp(0.0, 1.0);
-  }
-
-  double get _chartLow => chartData.isEmpty
-      ? analysis.currentPrice * 0.97
-      : chartData.map((p) => p.close).reduce((a, b) => a < b ? a : b);
-
-  double get _chartHigh => chartData.isEmpty
-      ? analysis.currentPrice * 1.03
-      : chartData.map((p) => p.close).reduce((a, b) => a > b ? a : b);
-
-  Color _rangeColor() {
-    final p = _progress;
-    if (p < 0.33)
-      return dark ? const Color(0xFFEF4444) : const Color(0xFFDC2626);
-    if (p > 0.66)
-      return dark ? const Color(0xFF22C55E) : const Color(0xFF16A34A);
-    return const Color(0xFFF59E0B);
-  }
-
-  String _rangeLabel() {
-    final p = _progress;
-    if (p < 0.33) return 'Near 30d Low';
-    if (p > 0.66) return 'Near 30d High';
-    return 'Mid Range';
-  }
-
-  Color _changeColor() => analysis.dayChangePct >= 0
-      ? (dark ? const Color(0xFF22C55E) : const Color(0xFF16A34A))
-      : (dark ? const Color(0xFFEF4444) : const Color(0xFFDC2626));
-
-  Color _changeBg() => analysis.dayChangePct >= 0
-      ? (dark ? const Color(0xFF052E16) : const Color(0xFFDCFCE7))
-      : (dark ? const Color(0xFF450A0A) : const Color(0xFFFEE2E2));
-
-  void _openTradingView(BuildContext ctx) {
-    final sym = symbol
-        .replaceAll('NSE:', '')
-        .replaceAll('-EQ', '')
-        .replaceAll('-BE', '');
-    Navigator.push(
-        ctx,
-        MaterialPageRoute(
-            builder: (_) => BrowserLite_V(
-                'https://in.tradingview.com/chart/?symbol=NSE%3A$sym')));
-  }
+  double get _low => chartData.map((p) => p.close).reduce(math.min);
+  double get _high => chartData.map((p) => p.close).reduce(math.max);
 
   @override
   Widget build(BuildContext context) {
-    final cc = _changeColor();
-    final cb = _changeBg();
-    final rc = _rangeColor();
-    final isUp = analysis.dayChangePct >= 0;
-    final lineC = isUp
-        ? (dark ? const Color(0xFF22C55E) : const Color(0xFF16A34A))
-        : (dark ? const Color(0xFFEF4444) : const Color(0xFFDC2626));
-    final fillC = isUp
-        ? (dark ? const Color(0xFF052E16) : const Color(0xFFDCFCE7))
-        : (dark ? const Color(0xFF450A0A) : const Color(0xFFFEE2E2));
+    String answer;
+    Color color;
+    double progress = .5;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: _DS.card(dark),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _DS.border(dark)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Header
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          child: Row(children: [
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('30-Day Price',
-                  style: GoogleFonts.dmSans(
-                      color: _DS.textPrimary(dark),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.2)),
-              const SizedBox(height: 2),
-              Text('Last 30 trading days',
-                  style: GoogleFonts.dmSans(
-                      color: _DS.textSecondary(dark), fontSize: 11.5)),
+    if (chartData.isEmpty) {
+      answer = chartLoading
+          ? 'Checking the last 30 days…'
+          : 'Chart data unavailable';
+      color = _T.sub(context);
+    } else {
+      final span = _high - _low;
+      progress = span == 0
+          ? .5
+          : ((analysis.currentPrice - _low) / span).clamp(0.0, 1.0);
+      if (progress < .33) {
+        answer = 'Near its 30-day low';
+        color = _T.down;
+      } else if (progress > .66) {
+        answer = 'Near its 30-day high';
+        color = _T.up;
+      } else {
+        answer = 'In the middle of its 30-day range';
+        color = _T.mid;
+      }
+    }
+
+    return _Fold(
+      icon: Icons.show_chart_rounded,
+      color: color,
+      title: 'Where is the price now?',
+      answer: answer,
+      child: chartData.isEmpty
+          ? (chartLoading
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                      child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2))))
+              : const _Note(
+                  'We could not load the last 30 days of prices. Pull down to refresh and try again.'))
+          : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              _RangeBar(
+                  low: _low,
+                  high: _high,
+                  current: analysis.currentPrice,
+                  progress: progress,
+                  color: color),
+              const SizedBox(height: 14),
+              _PriceChart(data: chartData, up: analysis.dayChangePct >= 0),
+              const SizedBox(height: 12),
+              const _Note(
+                  'Near the low can mean cheap or can mean weak. Near the high can mean strong or can mean stretched. Use it with the other cards.'),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => BrowserLite_V(
+                              'https://in.tradingview.com/chart/?symbol=NSE%3A$symbol'))),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: Text('Open full chart on TradingView',
+                      style: _ts(context,
+                          s: 13, w: FontWeight.w700, color: _T.link)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _T.link,
+                    side: BorderSide(color: _T.link.withOpacity(.4)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
             ]),
-            const Spacer(),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                  color: cb, borderRadius: BorderRadius.circular(8)),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(
-                    isUp
-                        ? Icons.trending_up_rounded
-                        : Icons.trending_down_rounded,
-                    color: cc,
-                    size: 13),
-                const SizedBox(width: 4),
-                Text(
-                    '${isUp ? "+" : ""}${analysis.dayChangePct.toStringAsFixed(2)}%',
-                    style: GoogleFonts.jetBrainsMono(
-                        color: cc, fontSize: 12, fontWeight: FontWeight.w700)),
-              ]),
-            ),
+    );
+  }
+}
+
+class _RangeBar extends StatelessWidget {
+  final double low, high, current, progress;
+  final Color color;
+  const _RangeBar(
+      {required this.low,
+      required this.high,
+      required this.current,
+      required this.progress,
+      required this.color});
+
+  @override
+  Widget build(BuildContext context) =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('30-day low',
+                style: _ts(context, s: 11.5, color: _T.sub(context))),
+            Text('₹${_n2.format(low)}',
+                style: _ts(context,
+                    s: 13, w: FontWeight.w800, color: _T.down, figures: true)),
           ]),
-        ),
-        const SizedBox(height: 14),
-
-        // OHLC row
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(children: [
-            _OhlcCell(label: 'OPEN', value: analysis.currentPrice, dark: dark),
-            _vd(dark),
-            _OhlcCell(
-                label: 'HIGH',
-                value: _chartHigh,
-                dark: dark,
-                color:
-                    dark ? const Color(0xFF22C55E) : const Color(0xFF16A34A)),
-            _vd(dark),
-            _OhlcCell(
-                label: 'LOW',
-                value: _chartLow,
-                dark: dark,
-                color:
-                    dark ? const Color(0xFFEF4444) : const Color(0xFFDC2626)),
-            _vd(dark),
-            _OhlcCell(
-                label: 'LTP',
-                value: analysis.currentPrice,
-                dark: dark,
-                color: cc),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text('30-day high',
+                style: _ts(context, s: 11.5, color: _T.sub(context))),
+            Text('₹${_n2.format(high)}',
+                style: _ts(context,
+                    s: 13, w: FontWeight.w800, color: _T.up, figures: true)),
           ]),
-        ),
-        const SizedBox(height: 14),
-
-        // L-H progress bar
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: _LHProgressBar(
-            low: _chartLow,
-            high: _chartHigh,
-            current: analysis.currentPrice,
-            progress: _progress,
-            rangeColor: rc,
-            rangeLabel: _rangeLabel(),
-            dark: dark,
-          ),
-        ),
-        const SizedBox(height: 16),
-
-        // Chart
-        if (chartLoading)
-          SizedBox(
-            height: 180,
-            child: Center(
-                child: SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: dark ? _DS.cyan : const Color(0xFF2563EB)))),
-          )
-        else if (chartData.isEmpty)
-          SizedBox(
-            height: 100,
-            child: Center(
-                child: Text('Chart data unavailable',
-                    style: GoogleFonts.dmSans(
-                        color: _DS.textTertiary(dark), fontSize: 12))),
-          )
-        else
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 0, 0),
-            child: SizedBox(
-              height: 190,
-              child: SfCartesianChart(
-                plotAreaBorderWidth: 0,
-                margin: const EdgeInsets.only(right: 8),
-                backgroundColor: Colors.transparent,
-                enableAxisAnimation: true,
-                primaryXAxis: DateTimeAxis(
-                  dateFormat: DateFormat('MMM d'),
-                  intervalType: DateTimeIntervalType.days,
-                  interval: 7,
-                  majorGridLines: const MajorGridLines(width: 0),
-                  axisLine: const AxisLine(width: 0),
-                  majorTickLines: const MajorTickLines(size: 0),
-                  labelStyle:
-                      TextStyle(color: _DS.textSecondary(dark), fontSize: 9.5),
-                ),
-                primaryYAxis: NumericAxis(
-                  numberFormat: NumberFormat.compactCurrency(symbol: '₹'),
-                  majorGridLines: MajorGridLines(
-                      color: _DS.border(dark),
-                      width: 1,
-                      dashArray: const [3, 3]),
-                  axisLine: const AxisLine(width: 0),
-                  majorTickLines: const MajorTickLines(size: 0),
-                  labelStyle:
-                      TextStyle(color: _DS.textSecondary(dark), fontSize: 9.5),
-                  opposedPosition: true,
-                ),
-                series: <CartesianSeries<_ChartPoint, DateTime>>[
-                  AreaSeries<_ChartPoint, DateTime>(
-                    dataSource: chartData,
-                    xValueMapper: (d, _) => d.date,
-                    yValueMapper: (d, _) => d.close,
-                    color: fillC,
-                    borderColor: lineC,
-                    borderWidth: 2,
-                    animationDuration: 600,
-                    gradient: LinearGradient(
-                      colors: [fillC, fillC.withOpacity(0)],
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
+        ]),
+        const SizedBox(height: 10),
+        LayoutBuilder(builder: (ctx, box) {
+          const knob = 16.0;
+          return TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: progress),
+            duration: const Duration(milliseconds: 800),
+            curve: Curves.easeOutCubic,
+            builder: (_, v, __) {
+              final x =
+                  (v * box.maxWidth).clamp(knob / 2, box.maxWidth - knob / 2);
+              return SizedBox(
+                height: knob,
+                child: Stack(clipBehavior: Clip.none, children: [
+                  Positioned(
+                    top: (knob - 8) / 2,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      height: 8,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        gradient: const LinearGradient(
+                            colors: [_T.down, _T.mid, _T.up]),
+                      ),
                     ),
                   ),
-                ],
-                tooltipBehavior: TooltipBehavior(
-                  enable: true,
-                  builder: (data, point, series, pointIndex, seriesIndex) {
-                    if (pointIndex < 0 || pointIndex >= chartData.length)
-                      return const SizedBox.shrink();
-                    final pt = chartData[pointIndex];
-                    return Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                  Positioned(
+                    left: x - knob / 2,
+                    child: Container(
+                      width: knob,
+                      height: knob,
                       decoration: BoxDecoration(
-                        color: dark ? const Color(0xFF1E2128) : Colors.white,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: _DS.border(dark)),
-                        boxShadow: [
-                          BoxShadow(
-                              color:
-                                  Colors.black.withOpacity(dark ? 0.4 : 0.12),
-                              blurRadius: 12,
-                              offset: const Offset(0, 4))
-                        ],
+                        color: color,
+                        shape: BoxShape.circle,
+                        border:
+                            Border.all(color: _T.surface(context), width: 3),
                       ),
-                      child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(DateFormat('MMM d, yyyy').format(pt.date),
-                                style: TextStyle(
-                                    color: _DS.textSecondary(dark),
-                                    fontSize: 10.5)),
-                            const SizedBox(height: 2),
-                            Text('₹${pt.close.toStringAsFixed(2)}',
-                                style: GoogleFonts.jetBrainsMono(
-                                    color: lineC,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700)),
-                          ]),
-                    );
-                  },
-                ),
-              ),
-            ),
-          ),
-
-        // TradingView button
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: GestureDetector(
-            onTap: () => _openTradingView(context),
-            child: Container(
-              height: 46,
-              decoration: BoxDecoration(
-                color: dark ? _DS.cyan : const Color(0xFF2563EB),
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                      color: (dark ? _DS.cyan : const Color(0xFF2563EB))
-                          .withOpacity(.28),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4))
-                ],
-              ),
-              child:
-                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(Icons.candlestick_chart_rounded,
-                    color: dark
-                        ? const Color(0xFF080C12)
-                        : Colors.white.withOpacity(.9),
-                    size: 16),
-                const SizedBox(width: 8),
-                Text('View on TradingView',
-                    style: GoogleFonts.dmSans(
-                        color: dark ? const Color(0xFF080C12) : Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: .2)),
-                const SizedBox(width: 6),
-                Icon(Icons.open_in_new_rounded,
-                    color: (dark ? const Color(0xFF080C12) : Colors.white)
-                        .withOpacity(.55),
-                    size: 12),
-              ]),
-            ),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _vd(bool dark) => Container(
-      width: 1,
-      height: 32,
-      color: _DS.border(dark),
-      margin: const EdgeInsets.symmetric(horizontal: 8));
-}
-
-// ─── OHLC Cell ────────────────────────────────────────────────────────────────
-class _OhlcCell extends StatelessWidget {
-  final String label;
-  final double value;
-  final bool dark;
-  final Color? color;
-  const _OhlcCell(
-      {required this.label,
-      required this.value,
-      required this.dark,
-      this.color});
-  @override
-  Widget build(BuildContext context) => Expanded(
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label,
-              style: GoogleFonts.dmSans(
-                  color: _DS.textTertiary(dark),
-                  fontSize: 9,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: .8)),
-          const SizedBox(height: 3),
-          Text('₹${value.toStringAsFixed(2)}',
-              style: GoogleFonts.jetBrainsMono(
-                  color: color ?? _DS.textPrimary(dark),
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w700),
-              overflow: TextOverflow.ellipsis),
-        ]),
-      );
-}
-
-// ─── L-H Progress Bar ─────────────────────────────────────────────────────────
-class _LHProgressBar extends StatelessWidget {
-  final double low, high, current, progress;
-  final Color rangeColor;
-  final String rangeLabel;
-  final bool dark;
-  const _LHProgressBar({
-    required this.low,
-    required this.high,
-    required this.current,
-    required this.progress,
-    required this.rangeColor,
-    required this.rangeLabel,
-    required this.dark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bearRed = dark ? const Color(0xFFEF4444) : const Color(0xFFDC2626);
-    final bullGreen = dark ? const Color(0xFF22C55E) : const Color(0xFF16A34A);
-
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Row(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-              width: 6,
-              height: 6,
-              decoration:
-                  BoxDecoration(color: bearRed, shape: BoxShape.circle)),
-          const SizedBox(width: 4),
-          Text('L  ₹${low.toStringAsFixed(2)}',
-              style: GoogleFonts.jetBrainsMono(
-                  color: bearRed, fontSize: 10, fontWeight: FontWeight.w600)),
-        ]),
-        Column(children: [
-          Text(rangeLabel,
-              style: GoogleFonts.dmSans(
-                  color: rangeColor,
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w700)),
-          Text('₹${current.toStringAsFixed(2)}',
-              style: GoogleFonts.jetBrainsMono(
-                  color: rangeColor,
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700)),
-        ]),
-        Row(mainAxisSize: MainAxisSize.min, children: [
-          Text('H  ₹${high.toStringAsFixed(2)}',
-              style: GoogleFonts.jetBrainsMono(
-                  color: bullGreen, fontSize: 10, fontWeight: FontWeight.w600)),
-          const SizedBox(width: 4),
-          Container(
-              width: 6,
-              height: 6,
-              decoration:
-                  BoxDecoration(color: bullGreen, shape: BoxShape.circle)),
-        ]),
-      ]),
-      const SizedBox(height: 8),
-      LayoutBuilder(builder: (ctx, constraints) {
-        const thumbSize = 14.0;
-        final totalWidth = constraints.maxWidth;
-        final thumbX = (progress * totalWidth)
-            .clamp(thumbSize / 2, totalWidth - thumbSize / 2);
-        return SizedBox(
-          height: thumbSize + 4,
-          child: Stack(clipBehavior: Clip.none, children: [
-            Positioned(
-              top: (thumbSize + 4 - 7) / 2,
-              left: 0,
-              right: 0,
-              child: Container(
-                height: 7,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(4),
-                  gradient: LinearGradient(
-                      colors: [bearRed, const Color(0xFFFACC15), bullGreen]),
-                ),
-              ),
-            ),
-            Positioned(
-              left: thumbX - thumbSize / 2,
-              top: 2,
-              child: Container(
-                width: thumbSize,
-                height: thumbSize,
-                decoration: BoxDecoration(
-                  color: rangeColor,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: _DS.card(dark), width: 2.5),
-                  boxShadow: [
-                    BoxShadow(
-                        color: rangeColor.withOpacity(.45),
-                        blurRadius: 6,
-                        offset: const Offset(0, 2))
-                  ],
-                ),
-              ),
-            ),
-          ]),
-        );
-      }),
-    ]);
-  }
-}
-
-// ─── Top Bar (loader / error) ─────────────────────────────────────────────────
-class _TopBar extends StatelessWidget {
-  final bool dark;
-  final String symbol;
-  final Widget trailing;
-  const _TopBar(
-      {required this.dark, required this.symbol, required this.trailing});
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-        child: Row(children: [
-          _BackBtn(dark: dark),
-          const SizedBox(width: 12),
-          Text(symbol,
-              style: GoogleFonts.jetBrainsMono(
-                  color: _DS.textSecondary(dark),
-                  fontSize: 13,
-                  letterSpacing: 2)),
-          const Spacer(),
-          trailing,
-        ]),
-      );
-}
-
-// ─── Back Button ──────────────────────────────────────────────────────────────
-class _BackBtn extends StatelessWidget {
-  final bool dark;
-  const _BackBtn({required this.dark});
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: () => Navigator.of(context).maybePop(),
-        child: Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-              color: _DS.surface(dark),
-              borderRadius: BorderRadius.circular(11),
-              border: Border.all(color: _DS.border(dark))),
-          child: Icon(Icons.arrow_back_ios_new_rounded,
-              size: 15, color: _DS.textPrimary(dark)),
-        ),
-      );
-}
-
-// ─── Section Header ───────────────────────────────────────────────────────────
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final bool dark;
-  final Color? accent;
-  const _SectionHeader(
-      {required this.title,
-      required this.icon,
-      required this.dark,
-      this.accent});
-  @override
-  Widget build(BuildContext context) {
-    final c = accent ?? (dark ? _DS.cyan : const Color(0xFF2563EB));
-    return Row(children: [
-      Icon(icon, size: 14, color: c),
-      const SizedBox(width: 7),
-      Text(title.toUpperCase(),
-          style: GoogleFonts.dmSans(
-              color: _DS.textSecondary(dark),
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.5)),
-    ]);
-  }
-}
-
-// ─── Disclaimer ───────────────────────────────────────────────────────────────
-class _DisclaimerBanner extends StatelessWidget {
-  final bool dark;
-  const _DisclaimerBanner({required this.dark});
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: _DS.amber.withOpacity(.07),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: _DS.amber.withOpacity(.20)),
-        ),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Icon(Icons.info_outline_rounded, color: _DS.amber, size: 14),
-          const SizedBox(width: 10),
-          Expanded(
-              child: Text(
-            'For educational purposes only. Not financial advice. Consult a SEBI-registered advisor before trading.',
-            style: GoogleFonts.dmSans(
-                color: _DS.amber.withOpacity(.9), fontSize: 11, height: 1.5),
-          )),
-        ]),
-      );
-}
-
-// ─── One-liner Card ───────────────────────────────────────────────────────────
-class _OneLinerCard extends StatelessWidget {
-  final String text;
-  final bool dark;
-  const _OneLinerCard({required this.text, required this.dark});
-  @override
-  Widget build(BuildContext context) {
-    final accent = dark ? _DS.cyan : const Color(0xFF2563EB);
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [accent.withOpacity(.07), _DS.violet.withOpacity(.04)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: accent.withOpacity(.18)),
-      ),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(Icons.psychology_rounded, color: accent, size: 18),
-        const SizedBox(width: 12),
-        Expanded(
-            child: Text(text,
-                style: GoogleFonts.dmSans(
-                    color: _DS.textPrimary(dark),
-                    fontSize: 13.5,
-                    height: 1.6))),
-      ]),
-    );
-  }
-}
-
-// ─── Screener Card ────────────────────────────────────────────────────────────
-class _ScreenerCard extends StatelessWidget {
-  final ScreenerAnalysis sa;
-  final bool dark;
-  const _ScreenerCard({required this.sa, required this.dark});
-
-  @override
-  Widget build(BuildContext context) {
-    final total = sa.bullishCount + sa.bearishCount;
-    if (total == 0)
-      return _EmptyState(dark: dark, message: 'No screener signals found');
-
-    final biasColor = sa.bullishCount > sa.bearishCount
-        ? _DS.green(dark)
-        : sa.bearishCount > sa.bullishCount
-            ? _DS.red
-            : _DS.amber;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: _DS.card(dark),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-            color: sa.strongSignal
-                ? biasColor.withOpacity(.25)
-                : _DS.border(dark)),
-      ),
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(children: [
-            _StatPill(
-                value: '${sa.bullishCount}',
-                label: 'Bullish',
-                color: _DS.green(dark)),
-            const SizedBox(width: 8),
-            _StatPill(
-                value: '${sa.bearishCount}', label: 'Bearish', color: _DS.red),
-            const Spacer(),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: biasColor.withOpacity(.1),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: biasColor.withOpacity(.25)),
-              ),
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
-                if (sa.strongSignal) ...[
-                  Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                          shape: BoxShape.circle, color: biasColor)),
-                  const SizedBox(width: 6),
-                ],
-                Text(sa.bias,
-                    style: GoogleFonts.dmSans(
-                        color: biasColor,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700)),
-              ]),
-            ),
-          ]),
-        ),
-        if (sa.summary.isNotEmpty) ...[
-          Divider(height: 1, color: _DS.divider(dark)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-            child: Text(sa.summary,
-                style: GoogleFonts.dmSans(
-                    color: _DS.textSecondary(dark), fontSize: 12, height: 1.5)),
-          ),
-        ],
-        if (sa.bullish.isNotEmpty) ...[
-          Divider(height: 1, color: _DS.divider(dark)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Icon(Icons.arrow_upward_rounded,
-                    color: _DS.green(dark), size: 12),
-                const SizedBox(width: 5),
-                Text('BULLISH',
-                    style: GoogleFonts.dmSans(
-                        color: _DS.green(dark),
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1)),
-              ]),
-              const SizedBox(height: 8),
-              Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: sa.bullish
-                      .map((s) => _SignalChip(
-                          name: s.name,
-                          tf: s.timeframe,
-                          color: _DS.green(dark)))
-                      .toList()),
-            ]),
-          ),
-        ],
-        if (sa.bearish.isNotEmpty) ...[
-          Divider(height: 1, color: _DS.divider(dark)),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                const Icon(Icons.arrow_downward_rounded,
-                    color: _DS.red, size: 12),
-                const SizedBox(width: 5),
-                Text('BEARISH',
-                    style: GoogleFonts.dmSans(
-                        color: _DS.red,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1)),
-              ]),
-              const SizedBox(height: 8),
-              Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: sa.bearish
-                      .map((s) => _SignalChip(
-                          name: s.name, tf: s.timeframe, color: _DS.red))
-                      .toList()),
-            ]),
-          ),
-        ],
-      ]),
-    );
-  }
-}
-
-class _StatPill extends StatelessWidget {
-  final String value, label;
-  final Color color;
-  const _StatPill(
-      {required this.value, required this.label, required this.color});
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-            color: color.withOpacity(.08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withOpacity(.18))),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text(value,
-              style: GoogleFonts.jetBrainsMono(
-                  color: color, fontSize: 14, fontWeight: FontWeight.w700)),
-          const SizedBox(width: 5),
-          Text(label,
-              style: GoogleFonts.dmSans(
-                  color: color.withOpacity(.7), fontSize: 11)),
-        ]),
-      );
-}
-
-class _SignalChip extends StatelessWidget {
-  final String name, tf;
-  final Color color;
-  const _SignalChip(
-      {required this.name, required this.tf, required this.color});
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-        decoration: BoxDecoration(
-            color: color.withOpacity(.08),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: color.withOpacity(.2))),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text(name,
-              style: GoogleFonts.dmSans(
-                  color: color, fontSize: 11, fontWeight: FontWeight.w600)),
-          if (tf.isNotEmpty) ...[
-            const SizedBox(width: 5),
-            Container(width: 1, height: 10, color: color.withOpacity(.25)),
-            const SizedBox(width: 5),
-            Text(tf,
-                style: GoogleFonts.jetBrainsMono(
-                    color: color.withOpacity(.65), fontSize: 9)),
-          ],
-        ]),
-      );
-}
-
-// ─── Alert Card ───────────────────────────────────────────────────────────────
-class _AlertCard extends StatelessWidget {
-  final AlertSummary alert;
-  final bool dark;
-  const _AlertCard({required this.alert, required this.dark});
-  @override
-  Widget build(BuildContext context) => Container(
-        decoration: BoxDecoration(
-          color: _DS.card(dark),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-              color: alert.proximityNotes.isNotEmpty
-                  ? _DS.amber.withOpacity(.25)
-                  : _DS.border(dark)),
-        ),
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            _StatPill(
-                value: '${alert.triggeredCount}',
-                label: 'Triggered',
-                color: _DS.red),
-            const SizedBox(width: 8),
-            _StatPill(
-                value: '${alert.pendingCount}',
-                label: 'Pending',
-                color: _DS.amber),
-          ]),
-          if (alert.proximityNotes.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            ...alert.proximityNotes.map((n) => Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.warning_amber_rounded,
-                            color: _DS.amber, size: 14),
-                        const SizedBox(width: 8),
-                        Expanded(
-                            child: Text(n,
-                                style: GoogleFonts.dmSans(
-                                    color: _DS.amber.withOpacity(.9),
-                                    fontSize: 12,
-                                    height: 1.5))),
-                      ]),
-                )),
-          ],
-          if (alert.summary.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(alert.summary,
-                style: GoogleFonts.dmSans(
-                    color: _DS.textSecondary(dark), fontSize: 12, height: 1.5)),
-          ],
-        ]),
-      );
-}
-
-// ─── Entry Card ───────────────────────────────────────────────────────────────
-class _EntryCard extends StatelessWidget {
-  final EntryOpportunity entry;
-  final bool dark;
-  final int index;
-  const _EntryCard(
-      {required this.entry, required this.dark, required this.index});
-
-  Color get _tc => entry.type == 'Aggressive'
-      ? _DS.red
-      : entry.type == 'Conservative'
-          ? _DS.green(dark)
-          : _DS.cyan;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        decoration: BoxDecoration(
-            color: _DS.card(dark),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _DS.border(dark))),
-        child: Column(children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-                color: _tc.withOpacity(.05),
-                borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(16))),
-            child: Row(children: [
-              _Tag(label: entry.type, color: _tc),
-              const Spacer(),
-              Text('R:R  ${entry.riskReward}',
-                  style: GoogleFonts.jetBrainsMono(
-                      color: _DS.textSecondary(dark),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600)),
-            ]),
-          ),
-          Divider(height: 1, color: _DS.divider(dark)),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(children: [
-              _LevelRow(
-                  label: 'Entry Zone',
-                  value: entry.entryZone,
-                  color: _DS.textPrimary(dark),
-                  dark: dark),
-              const SizedBox(height: 10),
-              Row(children: [
-                Expanded(
-                    child: _LevelBox(
-                        label: 'Stop Loss',
-                        value: '₹${entry.stopLoss.toStringAsFixed(2)}',
-                        color: _DS.red,
-                        dark: dark)),
-                const SizedBox(width: 8),
-                Expanded(
-                    child: _LevelBox(
-                        label: 'Target 1',
-                        value: '₹${entry.target1.toStringAsFixed(2)}',
-                        color: _DS.green(dark),
-                        dark: dark)),
-                const SizedBox(width: 8),
-                Expanded(
-                    child: _LevelBox(
-                        label: 'Target 2',
-                        value: '₹${entry.target2.toStringAsFixed(2)}',
-                        color: _DS.green(dark).withOpacity(.6),
-                        dark: dark)),
-              ]),
-              const SizedBox(height: 12),
-              Text(entry.rationale,
-                  style: GoogleFonts.dmSans(
-                      color: _DS.textSecondary(dark),
-                      fontSize: 13,
-                      height: 1.55)),
-            ]),
-          ),
-        ]),
-      );
-}
-
-class _LevelRow extends StatelessWidget {
-  final String label, value;
-  final Color color;
-  final bool dark;
-  const _LevelRow(
-      {required this.label,
-      required this.value,
-      required this.color,
-      required this.dark});
-  @override
-  Widget build(BuildContext context) => Row(children: [
-        Text(label,
-            style: GoogleFonts.dmSans(
-                color: _DS.textSecondary(dark), fontSize: 12)),
-        const Spacer(),
-        Text(value,
-            style: GoogleFonts.jetBrainsMono(
-                color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ]),
+              );
+            },
+          );
+        }),
       ]);
 }
 
-class _LevelBox extends StatelessWidget {
-  final String label, value;
+class _PriceChart extends StatelessWidget {
+  final List<_ChartPoint> data;
+  final bool up;
+  const _PriceChart({required this.data, required this.up});
+
+  @override
+  Widget build(BuildContext context) {
+    final lc = up ? _T.up : _T.down;
+    final dark = _T.dark(context);
+    final lbl = _T.sub(context);
+    return SizedBox(
+      height: 190,
+      child: SfCartesianChart(
+        plotAreaBorderWidth: 0,
+        margin: const EdgeInsets.only(right: 4),
+        backgroundColor: Colors.transparent,
+        primaryXAxis: DateTimeAxis(
+          dateFormat: DateFormat('MMM d'),
+          intervalType: DateTimeIntervalType.days,
+          interval: 7,
+          majorGridLines: const MajorGridLines(width: 0),
+          axisLine: const AxisLine(width: 0),
+          majorTickLines: const MajorTickLines(size: 0),
+          labelStyle: TextStyle(color: lbl, fontSize: 10),
+        ),
+        primaryYAxis: NumericAxis(
+          numberFormat: NumberFormat.compactCurrency(symbol: '₹'),
+          majorGridLines: MajorGridLines(
+              color: _T.hair(context), width: 1, dashArray: const [3, 3]),
+          axisLine: const AxisLine(width: 0),
+          majorTickLines: const MajorTickLines(size: 0),
+          labelStyle: TextStyle(color: lbl, fontSize: 10),
+          opposedPosition: true,
+        ),
+        series: <CartesianSeries<_ChartPoint, DateTime>>[
+          AreaSeries<_ChartPoint, DateTime>(
+            dataSource: data,
+            xValueMapper: (d, _) => d.date,
+            yValueMapper: (d, _) => d.close,
+            borderColor: lc,
+            borderWidth: 2,
+            animationDuration: 700,
+            gradient: LinearGradient(
+              colors: [lc.withOpacity(dark ? .25 : .18), lc.withOpacity(0)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
+        ],
+        tooltipBehavior: TooltipBehavior(
+          enable: true,
+          builder: (d, point, series, pIdx, sIdx) {
+            if (pIdx < 0 || pIdx >= data.length) return const SizedBox.shrink();
+            final pt = data[pIdx];
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: _T.surface(context),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _T.hair(context)),
+              ),
+              child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(DateFormat('MMM d, yyyy').format(pt.date),
+                        style: _ts(context, s: 10.5, color: _T.sub(context))),
+                    Text('₹${_n2.format(pt.close)}',
+                        style: _ts(context,
+                            s: 13,
+                            w: FontWeight.w800,
+                            color: lc,
+                            figures: true)),
+                  ]),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _ScannersFold extends StatelessWidget {
+  final ScreenerAnalysis sa;
+  const _ScannersFold({required this.sa});
+
+  @override
+  Widget build(BuildContext context) {
+    final b = sa.bullishCount, r = sa.bearishCount;
+    final total = b + r;
+    final color = total == 0
+        ? _T.sub(context)
+        : b > r
+            ? _T.up
+            : r > b
+                ? _T.down
+                : _T.mid;
+    final answer = total == 0 ? 'No signals found' : '$b positive, $r negative';
+
+    return _Fold(
+      icon: Icons.radar_rounded,
+      color: color,
+      title: 'What are the chart scanners saying?',
+      answer: answer,
+      child: total == 0
+          ? const _Note(
+              'Our scanners look for known chart patterns. None were found for this stock today.')
+          : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (sa.summary.isNotEmpty) ...[
+                _AiLine(sa.summary),
+                const SizedBox(height: 14),
+              ],
+              if (sa.bullish.isNotEmpty) ...[
+                Text('Positive signs',
+                    style:
+                        _ts(context, s: 13, w: FontWeight.w700, color: _T.up)),
+                const SizedBox(height: 8),
+                Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: sa.bullish
+                        .map((s) => _SignalChip(s: s, color: _T.up))
+                        .toList()),
+                const SizedBox(height: 14),
+              ],
+              if (sa.bearish.isNotEmpty) ...[
+                Text('Negative signs',
+                    style: _ts(context,
+                        s: 13, w: FontWeight.w700, color: _T.down)),
+                const SizedBox(height: 8),
+                Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: sa.bearish
+                        .map((s) => _SignalChip(s: s, color: _T.down))
+                        .toList()),
+                const SizedBox(height: 14),
+              ],
+              const _Note(
+                  'Scanners are automatic checks for chart patterns. More positive than negative is a good sign, but never a guarantee.'),
+            ]),
+    );
+  }
+}
+
+class _SignalChip extends StatelessWidget {
+  final ScreenerSignal s;
   final Color color;
-  final bool dark;
-  const _LevelBox(
-      {required this.label,
-      required this.value,
-      required this.color,
-      required this.dark});
+  const _SignalChip({required this.s, required this.color});
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-            color: color.withOpacity(.06),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: color.withOpacity(.15))),
+            color: color.withOpacity(.1),
+            borderRadius: BorderRadius.circular(10)),
+        child: Text(s.timeframe.isEmpty ? s.name : '${s.name} (${s.timeframe})',
+            style: _ts(context, s: 12, w: FontWeight.w700, color: color)),
+      );
+}
+
+class _AlertsFold extends StatelessWidget {
+  final AlertSummary alert;
+  const _AlertsFold({required this.alert});
+  @override
+  Widget build(BuildContext context) {
+    final color = alert.proximityNotes.isNotEmpty ? _T.mid : _T.sub(context);
+    return _Fold(
+      icon: Icons.notifications_active_rounded,
+      color: color,
+      title: 'What about your alerts?',
+      answer:
+          '${alert.triggeredCount} triggered, ${alert.pendingCount} waiting',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (alert.proximityNotes.isNotEmpty)
+          _BulletList(items: alert.proximityNotes, color: _T.mid),
+        if (alert.summary.isNotEmpty) ...[
+          if (alert.proximityNotes.isNotEmpty) const SizedBox(height: 12),
+          _AiLine(alert.summary),
+        ],
+        if (alert.proximityNotes.isEmpty && alert.summary.isEmpty)
+          const _Note(
+              'Triggered means the price already hit your alert. Waiting means it has not yet.'),
+      ]),
+    );
+  }
+}
+
+class _IndicatorsFold extends StatelessWidget {
+  final String indicators, volume;
+  const _IndicatorsFold({required this.indicators, required this.volume});
+  @override
+  Widget build(BuildContext context) => _Fold(
+        icon: Icons.analytics_rounded,
+        color: _T.link,
+        title: 'What do indicators and volume say?',
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label,
-              style: GoogleFonts.dmSans(
-                  color: color.withOpacity(.6),
-                  fontSize: 9,
-                  letterSpacing: .5)),
-          const SizedBox(height: 3),
-          Text(value,
-              style: GoogleFonts.jetBrainsMono(
-                  color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+          if (indicators.isNotEmpty) ...[
+            Text('Indicators', style: _ts(context, s: 13, w: FontWeight.w700)),
+            Text('Maths-based readings of price momentum and trend',
+                style: _ts(context, s: 12, color: _T.sub(context))),
+            const SizedBox(height: 6),
+            _Para(indicators),
+          ],
+          if (indicators.isNotEmpty && volume.isNotEmpty)
+            const SizedBox(height: 14),
+          if (volume.isNotEmpty) ...[
+            Text('Volume', style: _ts(context, s: 13, w: FontWeight.w700)),
+            Text('How many shares are being traded',
+                style: _ts(context, s: 12, color: _T.sub(context))),
+            const SizedBox(height: 6),
+            _Para(volume),
+          ],
         ]),
       );
 }
 
-// ─── S&R Card ─────────────────────────────────────────────────────────────────
-class _SRCard extends StatelessWidget {
-  final List<PriceLevel> supports, resistances;
-  final bool dark;
-  const _SRCard(
-      {required this.supports, required this.resistances, required this.dark});
+// ─── Plans ────────────────────────────────────────────────────────────────────
+String _planName(String type) {
+  switch (type.toLowerCase()) {
+    case 'conservative':
+      return 'Cautious';
+    case 'aggressive':
+      return 'Bold';
+    case 'moderate':
+    case 'balanced':
+      return 'Balanced';
+    default:
+      return type.isEmpty ? 'Plan' : type;
+  }
+}
+
+Color _planColor(String type) {
+  switch (type.toLowerCase()) {
+    case 'conservative':
+      return _T.up;
+    case 'aggressive':
+      return _T.mid;
+    default:
+      return _T.link;
+  }
+}
+
+String _rewardText(String rr) {
+  final m = RegExp(r'(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)').firstMatch(rr);
+  if (m != null) {
+    final a = double.parse(m.group(1)!);
+    final b = double.parse(m.group(2)!);
+    if (a > 0) {
+      final x = b / a;
+      final txt =
+          x == x.roundToDouble() ? x.toStringAsFixed(0) : x.toStringAsFixed(1);
+      return 'For every ₹1 you risk, you could gain about ₹$txt';
+    }
+  }
+  return rr.isEmpty ? '' : 'Risk vs reward: $rr';
+}
+
+class _PlanSection extends StatelessWidget {
+  final List<EntryOpportunity> entries;
+  final int selected;
+  final ValueChanged<int> onSelect;
+  const _PlanSection(
+      {required this.entries, required this.selected, required this.onSelect});
+
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-            color: _DS.card(dark),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _DS.border(dark))),
-        child: Column(children: [
-          _SRSection(
-              levels: supports,
-              label: 'SUPPORT',
-              color: _DS.green(dark),
-              dark: dark),
-          Divider(height: 1, color: _DS.divider(dark)),
-          _SRSection(
-              levels: resistances,
-              label: 'RESISTANCE',
-              color: _DS.red,
-              dark: dark),
+          color: _T.surface(context),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: _T.hair(context)),
+        ),
+        child: Row(children: [
+          const Icon(Icons.hourglass_empty_rounded, color: _T.mid, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text('No clear entry right now. Waiting is also a decision.',
+                style: _ts(context, s: 14, w: FontWeight.w700)),
+          ),
         ]),
       );
+    }
+
+    final i = selected.clamp(0, entries.length - 1);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (entries.length > 1)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Wrap(spacing: 8, runSpacing: 8, children: [
+            for (int k = 0; k < entries.length; k++)
+              _PlanChip(
+                label: '${_planName(entries[k].type)} plan',
+                color: _planColor(entries[k].type),
+                active: k == i,
+                onTap: () => onSelect(k),
+              ),
+          ]),
+        ),
+      AnimatedSwitcher(
+        duration: const Duration(milliseconds: 280),
+        switchInCurve: Curves.easeOutCubic,
+        transitionBuilder: (child, anim) => FadeTransition(
+          opacity: anim,
+          child: SlideTransition(
+            position: Tween(begin: const Offset(.04, 0), end: Offset.zero)
+                .animate(anim),
+            child: child,
+          ),
+        ),
+        child: _PlanCard(key: ValueKey(i), entry: entries[i]),
+      ),
+    ]);
+  }
 }
 
-class _SRSection extends StatelessWidget {
-  final List<PriceLevel> levels;
+class _PlanChip extends StatelessWidget {
   final String label;
   final Color color;
-  final bool dark;
-  const _SRSection(
-      {required this.levels,
-      required this.label,
+  final bool active;
+  final VoidCallback onTap;
+  const _PlanChip(
+      {required this.label,
       required this.color,
-      required this.dark});
+      required this.active,
+      required this.onTap});
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: active ? color : Colors.transparent,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: active ? color : _T.hair(context)),
+          ),
+          child: Text(label,
+              style: _ts(context,
+                  s: 13,
+                  w: FontWeight.w700,
+                  color: active ? Colors.white : _T.ink(context))),
+        ),
+      );
+}
+
+class _PlanCard extends StatelessWidget {
+  final EntryOpportunity entry;
+  const _PlanCard({super.key, required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _planColor(entry.type);
+    final reward = _rewardText(entry.riskReward);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _T.surface(context),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withOpacity(.4)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${_planName(entry.type)} plan',
+            style: _ts(context, s: 16, w: FontWeight.w800, color: color)),
+        if (entry.entryZone.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text('Possible entry: ${entry.entryZone}',
+              style:
+                  _ts(context, s: 13, color: _T.sub(context), figures: true)),
+        ],
+        const SizedBox(height: 14),
+        Row(children: [
+          Expanded(
+              child: _LevelBox(
+                  label: 'Exit if it hits',
+                  hint: 'stop-loss',
+                  value: '₹${_n2.format(entry.stopLoss)}',
+                  color: _T.down)),
+          const SizedBox(width: 8),
+          Expanded(
+              child: _LevelBox(
+                  label: 'First goal',
+                  hint: 'target 1',
+                  value: '₹${_n2.format(entry.target1)}',
+                  color: _T.up)),
+          const SizedBox(width: 8),
+          Expanded(
+              child: _LevelBox(
+                  label: 'Second goal',
+                  hint: 'target 2',
+                  value: '₹${_n2.format(entry.target2)}',
+                  color: _T.up)),
+        ]),
+        if (reward.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Row(children: [
+            Icon(Icons.balance_rounded, size: 15, color: _T.sub(context)),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text(reward,
+                    style: _ts(context, s: 13, w: FontWeight.w600))),
+          ]),
+        ],
+        if (entry.rationale.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _AiLine(entry.rationale),
+        ],
+        const SizedBox(height: 12),
+        const _Note(
+            'A stop-loss is the price where you would exit to limit your loss. Goals are prices where you could book profit.'),
+      ]),
+    );
+  }
+}
+
+class _LevelBox extends StatelessWidget {
+  final String label, hint, value;
+  final Color color;
+  const _LevelBox(
+      {required this.label,
+      required this.hint,
+      required this.value,
+      required this.color});
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(.08),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: _ts(context, s: 11.5, color: _T.sub(context))),
+          const SizedBox(height: 2),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(value,
+                style: _ts(context,
+                    s: 15, w: FontWeight.w800, color: color, figures: true)),
+          ),
+          Text(hint, style: _ts(context, s: 10.5, color: _T.sub(context))),
+        ]),
+      );
+}
+
+// ─── Deep dive ────────────────────────────────────────────────────────────────
+class _DeepToggle extends StatelessWidget {
+  final bool open;
+  final VoidCallback onTap;
+  const _DeepToggle({required this.open, required this.onTap});
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: _T.link.withOpacity(.4)),
+            ),
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.analytics_outlined, size: 18, color: _T.link),
+              const SizedBox(width: 8),
+              Text(open ? 'Hide extra details' : 'Show extra details',
+                  style:
+                      _ts(context, s: 14, w: FontWeight.w700, color: _T.link)),
+              const SizedBox(width: 4),
+              AnimatedRotation(
+                turns: open ? .5 : 0,
+                duration: const Duration(milliseconds: 250),
+                child: const Icon(Icons.keyboard_arrow_down_rounded,
+                    size: 20, color: _T.link),
+              ),
+            ]),
+          ),
+        ),
+      );
+}
+
+class _LevelsBlock extends StatelessWidget {
+  final List<PriceLevel> supports, resistances;
+  const _LevelsBlock({required this.supports, required this.resistances});
+  @override
+  Widget build(BuildContext context) =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _group(context, 'Support (floors)', 'Price often stops falling here',
+            supports, _T.up),
+        const SizedBox(height: 16),
+        _group(context, 'Resistance (ceilings)',
+            'Price often stops rising here', resistances, _T.down),
+      ]);
 
   double _opacity(String s) => s == 'Strong'
       ? 1.0
@@ -2187,447 +1878,122 @@ class _SRSection extends StatelessWidget {
           ? .6
           : .35;
 
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Icon(
-                label == 'SUPPORT'
-                    ? Icons.arrow_upward_rounded
-                    : Icons.arrow_downward_rounded,
-                size: 12,
-                color: color),
-            const SizedBox(width: 5),
-            Text(label,
-                style: GoogleFonts.dmSans(
-                    color: color,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.2)),
-          ]),
-          const SizedBox(height: 12),
-          ...levels.map((l) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
+  Widget _group(BuildContext context, String title, String hint,
+          List<PriceLevel> levels, Color color) =>
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: _ts(context, s: 13.5, w: FontWeight.w700)),
+        Text(hint, style: _ts(context, s: 12, color: _T.sub(context))),
+        const SizedBox(height: 10),
+        if (levels.isEmpty)
+          Text('None marked',
+              style: _ts(context, s: 12.5, color: _T.sub(context)))
+        else
+          for (final l in levels)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: IntrinsicHeight(
                 child: Row(children: [
                   Container(
-                      width: 3,
-                      height: 40,
-                      decoration: BoxDecoration(
-                          color: color.withOpacity(_opacity(l.strength)),
-                          borderRadius: BorderRadius.circular(2))),
+                    width: 3,
+                    decoration: BoxDecoration(
+                        color: color.withOpacity(_opacity(l.strength)),
+                        borderRadius: BorderRadius.circular(2)),
+                  ),
                   const SizedBox(width: 12),
                   Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Text('₹${l.price.toStringAsFixed(2)}',
-                            style: GoogleFonts.jetBrainsMono(
-                                color: _DS.textPrimary(dark),
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700)),
+                        Text('₹${_n2.format(l.price)}',
+                            style: _ts(context,
+                                s: 15, w: FontWeight.w800, figures: true)),
                         Text(l.strength,
-                            style: GoogleFonts.dmSans(
-                                color: color.withOpacity(.6), fontSize: 11)),
+                            style: _ts(context, s: 11.5, color: color)),
                       ]),
                   const SizedBox(width: 12),
                   Expanded(
                       child: Text(l.note,
-                          style: GoogleFonts.dmSans(
-                              color: _DS.textSecondary(dark),
-                              fontSize: 12,
-                              height: 1.4))),
+                          style: _ts(context,
+                              s: 12.5, color: _T.sub(context), h: 1.45))),
                 ]),
-              )),
-        ]),
-      );
-}
-
-// ─── Observations ─────────────────────────────────────────────────────────────
-class _ObsCard extends StatelessWidget {
-  final List<String> items;
-  final bool dark;
-  const _ObsCard({required this.items, required this.dark});
-  @override
-  Widget build(BuildContext context) {
-    final accent = dark ? _DS.cyan : const Color(0xFF2563EB);
-    return Container(
-      decoration: BoxDecoration(
-          color: _DS.card(dark),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _DS.border(dark))),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: items
-            .asMap()
-            .entries
-            .map((e) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          width: 24,
-                          height: 24,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                              color: accent.withOpacity(.10),
-                              borderRadius: BorderRadius.circular(7)),
-                          child: Text('${e.key + 1}',
-                              style: GoogleFonts.jetBrainsMono(
-                                  color: accent,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700)),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                            child: Text(e.value,
-                                style: GoogleFonts.dmSans(
-                                    color: _DS.textPrimary(dark),
-                                    fontSize: 13,
-                                    height: 1.55))),
-                      ]),
-                ))
-            .toList(),
-      ),
-    );
-  }
-}
-
-// ─── Text Card ────────────────────────────────────────────────────────────────
-class _TextCard extends StatelessWidget {
-  final String content;
-  final IconData icon;
-  final bool dark;
-  final String? label;
-  const _TextCard(
-      {required this.content,
-      required this.icon,
-      required this.dark,
-      this.label});
-  @override
-  Widget build(BuildContext context) {
-    final accent = dark ? _DS.cyan : const Color(0xFF2563EB);
-    return Container(
-      decoration: BoxDecoration(
-          color: _DS.card(dark),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: _DS.border(dark))),
-      padding: const EdgeInsets.all(14),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(icon, color: accent, size: 16),
-        const SizedBox(width: 12),
-        Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (label != null) ...[
-            Text(label!,
-                style: GoogleFonts.dmSans(
-                    color: _DS.textTertiary(dark),
-                    fontSize: 10,
-                    letterSpacing: .8)),
-            const SizedBox(height: 4),
-          ],
-          Text(content,
-              style: GoogleFonts.dmSans(
-                  color: _DS.textPrimary(dark), fontSize: 13, height: 1.6)),
-        ])),
-      ]),
-    );
-  }
-}
-
-// ─── Risk Card ────────────────────────────────────────────────────────────────
-class _RiskCard extends StatelessWidget {
-  final List<String> risks;
-  final bool dark;
-  const _RiskCard({required this.risks, required this.dark});
-  @override
-  Widget build(BuildContext context) => Container(
-        decoration: BoxDecoration(
-            color: _DS.card(dark),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _DS.red.withOpacity(.15))),
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: risks
-              .map((r) => Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                              margin: const EdgeInsets.only(top: 2),
-                              width: 16,
-                              height: 16,
-                              decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: _DS.red.withOpacity(.1)),
-                              child: const Icon(Icons.priority_high_rounded,
-                                  color: _DS.red, size: 10)),
-                          const SizedBox(width: 10),
-                          Expanded(
-                              child: Text(r,
-                                  style: GoogleFonts.dmSans(
-                                      color: _DS.textPrimary(dark),
-                                      fontSize: 13,
-                                      height: 1.55))),
-                        ]),
-                  ))
-              .toList(),
-        ),
-      );
-}
-
-// ─── Fetch Status Card ────────────────────────────────────────────────────────
-class _FetchStatusCard extends StatelessWidget {
-  final List<FetchCheck> checks;
-  final int found, total;
-  final bool dark, expanded;
-  final VoidCallback onToggle;
-  const _FetchStatusCard({
-    required this.checks,
-    required this.found,
-    required this.total,
-    required this.dark,
-    required this.expanded,
-    required this.onToggle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final ratio = total > 0 ? found / total : 0.0;
-    final barColor = ratio == 1
-        ? _DS.green(dark)
-        : ratio > 0.5
-            ? _DS.amber
-            : _DS.red;
-    return Container(
-      decoration: BoxDecoration(
-          color: _DS.card(dark),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _DS.border(dark))),
-      child: Column(children: [
-        GestureDetector(
-          onTap: onToggle,
-          behavior: HitTestBehavior.opaque,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(11),
-                    color: barColor.withOpacity(.1)),
-                child: Icon(
-                    ratio == 1
-                        ? Icons.check_rounded
-                        : Icons.warning_amber_rounded,
-                    color: barColor,
-                    size: 18),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                    Text('$found of $total sources available',
-                        style: GoogleFonts.dmSans(
-                            color: _DS.textPrimary(dark),
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 6),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(3),
-                      child: LinearProgressIndicator(
-                          value: ratio,
-                          backgroundColor: barColor.withOpacity(.1),
-                          valueColor: AlwaysStoppedAnimation(barColor),
-                          minHeight: 3),
-                    ),
-                  ])),
-              const SizedBox(width: 12),
-              Icon(
-                  expanded
-                      ? Icons.expand_less_rounded
-                      : Icons.expand_more_rounded,
-                  color: _DS.textSecondary(dark),
-                  size: 20),
-            ]),
-          ),
-        ),
-        if (expanded) ...[
-          Divider(height: 1, color: _DS.divider(dark)),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: checks
-                  .map((c) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Row(children: [
-                          Icon(
-                              c.found
-                                  ? Icons.check_circle_rounded
-                                  : Icons.cancel_rounded,
-                              color: c.found ? _DS.green(dark) : _DS.red,
-                              size: 14),
-                          const SizedBox(width: 10),
-                          Expanded(
-                              child: Text(c.source,
-                                  style: GoogleFonts.jetBrainsMono(
-                                      color: _DS.textPrimary(dark),
-                                      fontSize: 11))),
-                          if (c.count > 0)
-                            Text('${c.count} rows',
-                                style: GoogleFonts.dmSans(
-                                    color: _DS.textSecondary(dark),
-                                    fontSize: 11)),
-                          if (!c.found)
-                            Text('missing',
-                                style: GoogleFonts.dmSans(
-                                    color: _DS.red, fontSize: 11)),
-                        ]),
-                      ))
-                  .toList(),
             ),
-          ),
-        ],
-      ]),
-    );
-  }
-}
-
-// ─── Meta Row ─────────────────────────────────────────────────────────────────
-class _MetaRow extends StatelessWidget {
-  final StockAnalysis analysis;
-  final VoidCallback onRefresh;
-  final bool dark;
-  const _MetaRow(
-      {required this.analysis, required this.onRefresh, required this.dark});
-
-  @override
-  Widget build(BuildContext context) {
-    final a = analysis;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-          color: _DS.card(dark),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: _DS.border(dark))),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          _MetaItem(
-              k: 'Source', v: a.cached ? '⚡ Cache' : '🤖 Live AI', dark: dark),
-          const SizedBox(width: 24),
-          _MetaItem(k: 'Timeframe', v: a.timeframe, dark: dark),
-        ]),
-        const SizedBox(height: 10),
-        Row(children: [
-          Icon(Icons.access_time_rounded,
-              color: _DS.textTertiary(dark), size: 12),
-          const SizedBox(width: 6),
-          Text('Updated  ${a.lastUpdated}',
-              style: GoogleFonts.jetBrainsMono(
-                  color: _DS.textTertiary(dark), fontSize: 10)),
-        ]),
-      ]),
-    );
-  }
-}
-
-class _MetaItem extends StatelessWidget {
-  final String k, v;
-  final bool dark;
-  const _MetaItem({required this.k, required this.v, required this.dark});
-  @override
-  Widget build(BuildContext context) =>
-      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(k,
-            style: GoogleFonts.dmSans(
-                color: _DS.textTertiary(dark),
-                fontSize: 10,
-                letterSpacing: .5)),
-        const SizedBox(height: 2),
-        Text(v,
-            style: GoogleFonts.dmSans(
-                color: _DS.textPrimary(dark),
-                fontSize: 13,
-                fontWeight: FontWeight.w600)),
       ]);
 }
 
-// ─── Empty State ──────────────────────────────────────────────────────────────
-class _EmptyState extends StatelessWidget {
-  final bool dark;
-  final String message;
-  const _EmptyState({required this.dark, required this.message});
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-            color: _DS.card(dark),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _DS.border(dark))),
-        child: Row(children: [
-          Icon(Icons.search_off_rounded,
-              color: _DS.textTertiary(dark), size: 18),
-          const SizedBox(width: 10),
-          Text(message,
-              style: GoogleFonts.dmSans(
-                  color: _DS.textSecondary(dark), fontSize: 13)),
-        ]),
-      );
-}
-
-// ─── Reusable Widgets ─────────────────────────────────────────────────────────
-class _Tag extends StatelessWidget {
-  final String label;
+class _BulletList extends StatelessWidget {
+  final List<String> items;
   final Color color;
-  const _Tag({required this.label, required this.color});
+  const _BulletList({required this.items, required this.color});
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(
-            color: color.withOpacity(.1),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: color.withOpacity(.22))),
-        child: Text(label,
-            style: GoogleFonts.dmSans(
-                color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+  Widget build(BuildContext context) => Column(
+        children: [
+          for (int i = 0; i < items.length; i++)
+            Padding(
+              padding: EdgeInsets.only(bottom: i < items.length - 1 ? 10 : 0),
+              child:
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Container(
+                  width: 6,
+                  height: 6,
+                  margin: const EdgeInsets.only(top: 7, right: 10),
+                  decoration:
+                      BoxDecoration(shape: BoxShape.circle, color: color),
+                ),
+                Expanded(child: _Para(items[i])),
+              ]),
+            ),
+        ],
       );
 }
 
-class _GradientButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final VoidCallback onTap;
-  const _GradientButton(
-      {required this.label, required this.icon, required this.onTap});
+class _SourcesBlock extends StatelessWidget {
+  final List<FetchCheck> checks;
+  const _SourcesBlock({required this.checks});
   @override
-  Widget build(BuildContext context) => GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-                colors: [Color(0xFF00D4FF), Color(0xFF0055FF)]),
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                  color: _DS.cyan.withOpacity(.2),
-                  blurRadius: 16,
-                  offset: const Offset(0, 5))
-            ],
-          ),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(icon, color: Colors.white, size: 16),
-            const SizedBox(width: 8),
-            Text(label,
-                style: GoogleFonts.dmSans(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700)),
-          ]),
-        ),
+  Widget build(BuildContext context) => Column(
+        children: [
+          for (final c in checks)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(children: [
+                Icon(
+                    c.found ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                    size: 15,
+                    color: c.found ? _T.up : _T.down),
+                const SizedBox(width: 10),
+                Expanded(child: Text(c.source, style: _ts(context, s: 12.5))),
+                Text(
+                    c.found
+                        ? (c.count > 0 ? '${c.count} rows' : 'ok')
+                        : 'missing',
+                    style: _ts(context,
+                        s: 11.5, color: c.found ? _T.sub(context) : _T.down)),
+              ]),
+            ),
+        ],
+      );
+}
+
+// ─── Footer ───────────────────────────────────────────────────────────────────
+class _Footer extends StatelessWidget {
+  final StockAnalysis analysis;
+  const _Footer({required this.analysis});
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+        child: Column(children: [
+          Text(
+              'Updated ${analysis.lastUpdated}'
+              '${analysis.cached ? " · saved copy" : " · fresh from AI"}'
+              '${analysis.timeframe.isNotEmpty ? " · ${analysis.timeframe}" : ""}',
+              textAlign: TextAlign.center,
+              style: _ts(context, s: 11.5, color: _T.sub(context))),
+          const SizedBox(height: 6),
+          Text(
+              'For learning only. Not financial advice. Please speak to a SEBI-registered advisor before you trade.',
+              textAlign: TextAlign.center,
+              style: _ts(context, s: 11.5, color: _T.sub(context), h: 1.5)),
+        ]),
       );
 }

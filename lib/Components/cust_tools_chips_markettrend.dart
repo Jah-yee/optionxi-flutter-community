@@ -58,8 +58,7 @@ class _StockChipsSectionMarketTrendState
         icon: Icons.ssid_chart_rounded,
         lightColor: const Color(0xFF0891B2),
         darkColor: const Color(0xFF22D3EE),
-        onTap: () =>
-            Navigator.push(context, _fadeRoute(BollingerBreakoutsPage())),
+        onTap: () => Navigator.push(context, _fadeRoute(BreakoutSignalsPage())),
       ),
       ChipItem(
         label: 'Breakouts',

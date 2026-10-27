@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
@@ -9,41 +10,98 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 // Design tokens
 // ─────────────────────────────────────────────────────────────────────────────
 class _T {
-  // Accent
   static const bullishDark = Color(0xFF00D4A8);
   static const bullishLight = Color(0xFF00897B);
   static const bearishDark = Color(0xFFFF5C72);
   static const bearishLight = Color(0xFFD32F2F);
-  static const warningDark = Color(0xFFF5A623);
-  static const warningLight = Color(0xFFE65100);
+  static const fireDark = Color(0xFFFFB020);
+  static const fireLight = Color(0xFFEF6C00);
 
-  // Surfaces – dark
   static const surfaceDark = Color(0xFF0D1117);
   static const cardDark = Color(0xFF161B22);
   static const elevatedDark = Color(0xFF1C2230);
   static const borderDark = Color(0xFF21262D);
 
-  // Surfaces – light
-  static const surfaceLight = Color(0xFFF4F6F9);
+  static const surfaceLight = Color(0xFFF6F7FA);
   static const cardLight = Color(0xFFFFFFFF);
   static const elevatedLight = Color(0xFFEFF3F8);
-  static const borderLight = Color(0xFFDEE3EC);
+  static const borderLight = Color(0xFFE4E8EF);
 
-  // Text – dark
   static const p1Dark = Color(0xFFE6EDF3);
   static const p2Dark = Color(0xFF8B949E);
   static const p3Dark = Color(0xFF484F58);
 
-  // Text – light
   static const p1Light = Color(0xFF0D1117);
   static const p2Light = Color(0xFF57606A);
   static const p3Light = Color(0xFFAFB8C1);
 
-  static const r = 16.0;
   static const rSm = 10.0;
-  static const rLg = 20.0;
+  static const r = 14.0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Data model — maps 1:1 onto the `sector_summary` table
+// ─────────────────────────────────────────────────────────────────────────────
+class SectorSummary {
+  final String sector;
+  final int stockCount;
+  final int advancingCount;
+  final int decliningCount;
+  final double advancingPct;
+  final double avgPcnt;
+  final double medianPcnt;
+  final double? volumeSurgeRatio;
+  final double trendScore;
+  final int? trendRank;
+  final bool isTrending;
+  final DateTime? updatedAt;
+
+  const SectorSummary({
+    required this.sector,
+    required this.stockCount,
+    required this.advancingCount,
+    required this.decliningCount,
+    required this.advancingPct,
+    required this.avgPcnt,
+    required this.medianPcnt,
+    required this.volumeSurgeRatio,
+    required this.trendScore,
+    required this.trendRank,
+    required this.isTrending,
+    required this.updatedAt,
+  });
+
+  factory SectorSummary.fromJson(Map<String, dynamic> j) {
+    double _d(dynamic v) => v == null ? 0.0 : (v as num).toDouble();
+    int _i(dynamic v) => v == null ? 0 : (v as num).toInt();
+
+    return SectorSummary(
+      sector: (j['sec'] ?? 'Others') as String,
+      stockCount: _i(j['stock_count']),
+      advancingCount: _i(j['advancing_count']),
+      decliningCount: _i(j['declining_count']),
+      advancingPct: _d(j['advancing_pct']),
+      avgPcnt: _d(j['avg_pcnt']),
+      medianPcnt: _d(j['median_pcnt']),
+      volumeSurgeRatio:
+          j['volume_surge_ratio'] == null ? null : _d(j['volume_surge_ratio']),
+      trendScore: _d(j['trend_score']),
+      trendRank: j['trend_rank'] == null ? null : _i(j['trend_rank']),
+      isTrending: (j['is_trending'] ?? false) as bool,
+      updatedAt:
+          j['updated_at'] == null ? null : DateTime.tryParse(j['updated_at']),
+    );
+  }
+
+  // trend_score is a roughly-normal composite z-score (typically -3..3).
+  // Squash it into an easy-to-read 0-100 "momentum" number for the UI.
+  double get momentumPct => (1 / (1 + exp(-trendScore))) * 100;
+
+  bool get isUp => medianPcnt >= 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page
 // ─────────────────────────────────────────────────────────────────────────────
 class SectorAnalysisPage extends StatefulWidget {
   const SectorAnalysisPage({Key? key}) : super(key: key);
@@ -57,22 +115,19 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
   late TabController _tabController;
   final SupabaseClient _supabase = Supabase.instance.client;
 
-  Map<String, List<StockData>> _sectorData = {};
-  List<SectorTrend> _bullishSectors = [];
-  List<SectorTrend> _bearishSectors = [];
+  List<SectorSummary> _allSectors = [];
+  List<SectorSummary> _rising = [];
+  List<SectorSummary> _falling = [];
+  List<SectorSummary> _topTrending = [];
   bool _isLoading = true;
+  bool _isNavigating = false;
   String? _error;
-
-  late AnimationController _breadthAnimCtrl;
+  bool _overviewExpanded = true;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    _breadthAnimCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1000),
-    );
     _fetchData();
     AchievementEvents.openedSectorPulse();
   }
@@ -80,7 +135,6 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
   @override
   void dispose() {
     _tabController.dispose();
-    _breadthAnimCtrl.dispose();
     super.dispose();
   }
 
@@ -89,7 +143,7 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
 
   Color get _bull => _dark ? _T.bullishDark : _T.bullishLight;
   Color get _bear => _dark ? _T.bearishDark : _T.bearishLight;
-  Color get _warn => _dark ? _T.warningDark : _T.warningLight;
+  Color get _fire => _dark ? _T.fireDark : _T.fireLight;
 
   Color get _surface => _dark ? _T.surfaceDark : _T.surfaceLight;
   Color get _card => _dark ? _T.cardDark : _T.cardLight;
@@ -100,7 +154,7 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
   Color get _t2 => _dark ? _T.p2Dark : _T.p2Light;
   Color get _t3 => _dark ? _T.p3Dark : _T.p3Light;
 
-  Color _accentFor(bool isBullish) => isBullish ? _bull : _bear;
+  Color _accentFor(bool isUp) => isUp ? _bull : _bear;
 
   // ─── Data ─────────────────────────────────────────────────────────────────
   Future<void> _fetchData() async {
@@ -111,39 +165,29 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
 
     try {
       final response = await _supabase
-          .from('generated_values')
-          .select(
-              'stckname, pcnt, close, high, low, open, vol, sec, rsi14, ema20, sma20')
-          .not('sec', 'is', null);
+          .from('sector_summary')
+          .select()
+          .order('trend_score', ascending: false);
 
       final data = response as List<dynamic>;
-      final Map<String, List<StockData>> temp = {};
+      final sectors = data
+          .map((e) => SectorSummary.fromJson(e as Map<String, dynamic>))
+          .toList();
 
-      for (final item in data) {
-        final stock = StockData.fromJson(item);
-        final sector = stock.sector ?? 'Others';
-        temp.putIfAbsent(sector, () => []).add(stock);
-      }
-
-      final List<SectorTrend> bulls = [];
-      final List<SectorTrend> bears = [];
-
-      temp.forEach((sector, stocks) {
-        final t = _calcTrend(sector, stocks);
-        (t.bullishScore > 0 ? bulls : bears).add(t);
-      });
-
-      bulls.sort((a, b) => b.bullishScore.compareTo(a.bullishScore));
-      bears.sort((a, b) => a.bearishScore.compareTo(b.bearishScore));
+      final rising = sectors.where((s) => s.isUp).toList()
+        ..sort((a, b) => b.trendScore.compareTo(a.trendScore));
+      final falling = sectors.where((s) => !s.isUp).toList()
+        ..sort((a, b) => a.trendScore.compareTo(b.trendScore));
+      final top = sectors.where((s) => s.isTrending).toList()
+        ..sort((a, b) => (a.trendRank ?? 999).compareTo(b.trendRank ?? 999));
 
       setState(() {
-        _sectorData = temp;
-        _bullishSectors = bulls;
-        _bearishSectors = bears;
+        _allSectors = sectors;
+        _rising = rising;
+        _falling = falling;
+        _topTrending = top;
         _isLoading = false;
       });
-
-      _breadthAnimCtrl.forward(from: 0);
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -152,38 +196,31 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
     }
   }
 
-  SectorTrend _calcTrend(String sector, List<StockData> stocks) {
-    final n = stocks.length;
-    final pos = stocks.where((s) => s.pcnt > 0).length;
-    final neg = stocks.where((s) => s.pcnt < 0).length;
-    final a5 = stocks.where((s) => s.pcnt > 5).length;
-    final a2 = stocks.where((s) => s.pcnt > 2).length;
-    final b2 = stocks.where((s) => s.pcnt < -2).length;
-    final b5 = stocks.where((s) => s.pcnt < -5).length;
-    final avg = stocks.fold(0.0, (s, x) => s + x.pcnt) / n;
-    final vol = stocks.fold(0.0, (s, x) => s + x.vol);
+  Future<void> _openSector(SectorSummary sector) async {
+    HapticFeedback.selectionClick();
+    setState(() => _isNavigating = true);
+    try {
+      final response = await _supabase
+          .from('generated_values')
+          .select(
+              'stckname, pcnt, close, high, low, open, vol, sec, rsi14, ema20, sma20')
+          .eq('sec', sector.sector);
 
-    double bull = 0, bear = 0;
-    if (avg > 0) {
-      bull = (pos / n * 40) + (a5 / n * 30) + (a2 / n * 20) + avg * 2;
-    } else {
-      bear = -(neg / n * 40) - (b5 / n * 30) - (b2 / n * 20) + avg * 2;
+      final data = response as List<dynamic>;
+      final stocks = data
+          .map((e) => StockData.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+      if (!mounted) return;
+      setState(() => _isNavigating = false);
+      Get.to(() => SectorStocksPage(sectorName: sector.sector, stocks: stocks));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isNavigating = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load ${sector.sector}: $e')),
+      );
     }
-
-    return SectorTrend(
-      sectorName: sector,
-      totalStocks: n,
-      positiveStocks: pos,
-      negativeStocks: neg,
-      above5Percent: a5,
-      above2Percent: a2,
-      below2Percent: b2,
-      below5Percent: b5,
-      averageChange: avg,
-      bullishScore: bull,
-      bearishScore: bear,
-      totalVolume: vol,
-    );
   }
 
   // ─── Root build ───────────────────────────────────────────────────────────
@@ -191,72 +228,90 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _surface,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(),
-            Expanded(
-              child: _isLoading
-                  ? _buildSkeleton()
-                  : _error != null
-                      ? _buildError()
-                      : _buildBody(),
+      body: Stack(
+        children: [
+          if (_isLoading)
+            SafeArea(child: _buildSkeleton())
+          else if (_error != null)
+            SafeArea(child: _buildError())
+          else
+            NestedScrollView(
+              headerSliverBuilder: (ctx, innerBoxIsScrolled) => [
+                _buildSliverAppBar(innerBoxIsScrolled),
+                SliverToBoxAdapter(child: _buildOverviewSection()),
+                SliverPersistentHeader(
+                  pinned: true,
+                  delegate: _PinnedHeaderDelegate(
+                    height: 52,
+                    child: _buildTabBar(),
+                  ),
+                ),
+              ],
+              body: TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildList(_rising, isUp: true),
+                  _buildList(_falling, isUp: false),
+                ],
+              ),
             ),
-          ],
-        ),
+          if (_isNavigating)
+            Container(
+              color: Colors.black.withOpacity(0.25),
+              child: const Center(child: CircularProgressIndicator()),
+            ),
+        ],
       ),
     );
   }
 
-  // ─── Header ───────────────────────────────────────────────────────────────
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 14, 16, 14),
-      decoration: BoxDecoration(
-        color: _card,
-        border: Border(bottom: BorderSide(color: _border)),
+  // ─── Collapsing top bar (the "sliver" everyone asked for) ─────────────────
+  Widget _buildSliverAppBar(bool isScrolled) {
+    return SliverAppBar(
+      pinned: true,
+      floating: true,
+      snap: true,
+      backgroundColor: _card,
+      surfaceTintColor: Colors.transparent,
+      elevation: isScrolled ? 1 : 0,
+      shadowColor: Colors.black.withOpacity(0.08),
+      toolbarHeight: 58,
+      titleSpacing: 2,
+      leadingWidth: 50,
+      leading: Padding(
+        padding: const EdgeInsets.only(left: 12),
+        child: _iconBtn(Icons.arrow_back_ios_new_rounded,
+            onTap: () => Navigator.of(context).maybePop()),
       ),
-      child: Row(
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Back
-          _iconBtn(Icons.arrow_back_ios_new_rounded,
-              onTap: () => Navigator.of(context).maybePop()),
-          const SizedBox(width: 14),
-
-          // Title
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Sector Pulse',
-                  style: TextStyle(
-                    color: _t1,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.6,
-                  ),
-                ),
-                Text(
-                  'Market breadth by sector',
-                  style: TextStyle(
-                      color: _t2, fontSize: 12, fontWeight: FontWeight.w400),
-                ),
-              ],
+          Text(
+            'Sector Pulse',
+            style: TextStyle(
+              color: _t1,
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.4,
             ),
           ),
-
-          // Mood pill
-          if (!_isLoading && _error == null) _buildMoodPill(),
-          const SizedBox(width: 8),
-
-          // Refresh
-          _iconBtn(Icons.refresh_rounded, onTap: () {
-            HapticFeedback.lightImpact();
-            _fetchData();
-          }),
+          Text(
+            'Trending sectors',
+            style: TextStyle(
+                color: _t2, fontSize: 11, fontWeight: FontWeight.w400),
+          ),
         ],
       ),
+      actions: [
+        _buildMoodPill(),
+        const SizedBox(width: 8),
+        _iconBtn(Icons.refresh_rounded, onTap: () {
+          HapticFeedback.lightImpact();
+          _fetchData();
+        }),
+        const SizedBox(width: 12),
+      ],
     );
   }
 
@@ -264,30 +319,29 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          color: _elevated,
-          borderRadius: BorderRadius.circular(_T.rSm),
-          border: Border.all(color: _border),
-        ),
-        child: Icon(icon, size: 16, color: _t2),
+        width: 32,
+        height: 32,
+        // decoration: BoxDecoration(
+        //   color: _elevated,
+        //   borderRadius: BorderRadius.circular(_T.rSm),
+        //   border: Border.all(color: _border),
+        // ),
+        child: Icon(icon, size: 15, color: _t2),
       ),
     );
   }
 
   Widget _buildMoodPill() {
-    final total = _bullishSectors.length + _bearishSectors.length;
+    final total = _rising.length + _falling.length;
     if (total == 0) return const SizedBox.shrink();
-    final bullPct = (_bullishSectors.length / total * 100).round();
-    final bearPct = 100 - bullPct;
-    // Show the DOMINANT direction and its percentage
-    final isBullDominant = bullPct >= bearPct;
-    final dominantPct = isBullDominant ? bullPct : bearPct;
-    final c = isBullDominant ? _bull : _bear;
-    final label = isBullDominant ? '$dominantPct% Bull' : '$dominantPct% Bear';
+    final upPct = (_rising.length / total * 100).round();
+    final downPct = 100 - upPct;
+    final isUpDominant = upPct >= downPct;
+    final dominantPct = isUpDominant ? upPct : downPct;
+    final c = isUpDominant ? _bull : _bear;
+    final label = isUpDominant ? 'Mostly up' : 'Mostly down';
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: c.withOpacity(0.12),
         borderRadius: BorderRadius.circular(20),
@@ -301,610 +355,420 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
               height: 6,
               decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
           const SizedBox(width: 5),
-          Text(
-            label,
-            style: TextStyle(
-                color: c,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.2),
-          ),
+          Text('$label · $dominantPct%',
+              style: TextStyle(
+                  color: c, fontSize: 10.5, fontWeight: FontWeight.w700)),
         ],
       ),
     );
   }
 
-  // ─── Body ─────────────────────────────────────────────────────────────────
-  Widget _buildBody() {
+  // ─── Market overview (tap to collapse, kept out of the main scroll) ───────
+  Widget _buildOverviewSection() {
     return Column(
       children: [
-        _buildBreadthBar(),
-        _buildTabBar(),
-        Expanded(
-          child: AnimatedBuilder(
-            animation: _tabController,
-            builder: (ctx, _) => IndexedStack(
-              index: _tabController.index,
+        GestureDetector(
+          onTap: () {
+            HapticFeedback.lightImpact();
+            setState(() => _overviewExpanded = !_overviewExpanded);
+          },
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: _elevated,
+              borderRadius: BorderRadius.circular(_T.r),
+              border: Border.all(color: _border),
+            ),
+            child: Row(
               children: [
-                _buildList(_bullishSectors, isBullish: true),
-                _buildList(_bearishSectors, isBullish: false),
+                Icon(
+                  _overviewExpanded
+                      ? Icons.keyboard_arrow_up_rounded
+                      : Icons.keyboard_arrow_down_rounded,
+                  size: 18,
+                  color: _t2,
+                ),
+                const SizedBox(width: 6),
+                Icon(Icons.insights_rounded, size: 14, color: _bull),
+                const SizedBox(width: 6),
+                Text('Market overview',
+                    style: TextStyle(
+                        color: _t1, fontSize: 12, fontWeight: FontWeight.w700)),
+                const Spacer(),
+                if (!_overviewExpanded) ...[
+                  _miniStat('${_rising.length} up', _bull),
+                  const SizedBox(width: 6),
+                  _miniStat('${_falling.length} down', _bear),
+                ],
               ],
             ),
           ),
         ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOutCubic,
+          alignment: Alignment.topCenter,
+          child: _overviewExpanded
+              ? Column(
+                  children: [
+                    _buildBreadthBar(),
+                    if (_topTrending.isNotEmpty) _buildTrendingStrip(),
+                    const SizedBox(height: 4),
+                  ],
+                )
+              : const SizedBox(width: double.infinity),
+        ),
       ],
     );
   }
 
+  Widget _miniStat(String label, Color c) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+            color: c.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(10)),
+        child: Text(label,
+            style:
+                TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w700)),
+      );
+
   // ─── Breadth bar ──────────────────────────────────────────────────────────
   Widget _buildBreadthBar() {
-    final total = (_bullishSectors.length + _bearishSectors.length).toDouble();
+    final total = (_rising.length + _falling.length).toDouble();
     if (total == 0) return const SizedBox.shrink();
-    final bullRatio = _bullishSectors.length / total;
-    final bearRatio = _bearishSectors.length / total;
-    final bullPct = (bullRatio * 100).round();
-    final bearPct = 100 - bullPct;
+    final upRatio = _rising.length / total;
+    final upPct = (upRatio * 100).round();
+    final downPct = 100 - upPct;
 
-    return AnimatedBuilder(
-      animation:
-          CurvedAnimation(parent: _breadthAnimCtrl, curve: Curves.easeOutCubic),
-      builder: (ctx, _) {
-        final t = CurvedAnimation(
-                parent: _breadthAnimCtrl, curve: Curves.easeOutCubic)
-            .value;
-        return Container(
-          margin: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: _card,
-            borderRadius: BorderRadius.circular(_T.r),
-            border: Border.all(color: _border),
-          ),
-          child: Column(
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _card,
+        borderRadius: BorderRadius.circular(_T.r),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        children: [
+          Row(
             children: [
-              // Chips row: bull on left, bear on right, both showing their %
-              Row(
+              Icon(Icons.trending_up_rounded, size: 12, color: _bull),
+              const SizedBox(width: 4),
+              Text('${_rising.length} up',
+                  style: TextStyle(
+                      color: _bull, fontSize: 11, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Text('$upPct% ↑  ·  $downPct% ↓',
+                  style: TextStyle(
+                      color: _t2, fontSize: 11, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Text('${_falling.length} down',
+                  style: TextStyle(
+                      color: _bear, fontSize: 11, fontWeight: FontWeight.w600)),
+              const SizedBox(width: 4),
+              Icon(Icons.trending_down_rounded, size: 12, color: _bear),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: upRatio),
+              duration: const Duration(milliseconds: 900),
+              curve: Curves.easeOutCubic,
+              builder: (ctx, v, _) => Stack(
                 children: [
-                  _breadthChip(
-                    '${_bullishSectors.length} Bullish',
-                    _bull,
-                    Icons.trending_up_rounded,
+                  Container(height: 6, color: _bear.withOpacity(0.25)),
+                  FractionallySizedBox(
+                    widthFactor: v.clamp(0.0, 1.0),
+                    child: Container(height: 6, color: _bull),
                   ),
-                  const SizedBox(width: 8),
-                  _breadthChip(
-                    '${_bearishSectors.length} Bearish',
-                    _bear,
-                    Icons.trending_down_rounded,
-                  ),
-                  const Spacer(),
-                  // Show BOTH percentages side by side
-                  RichText(
-                    text: TextSpan(
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Trending strip ───────────────────────────────────────────────────────
+  Widget _buildTrendingStrip() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.local_fire_department_rounded, size: 14, color: _fire),
+              const SizedBox(width: 5),
+              Text('Hot right now',
+                  style: TextStyle(
+                      color: _t1, fontSize: 12.5, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 36,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _topTrending.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (ctx, i) {
+                final s = _topTrending[i];
+                final c = _accentFor(s.isUp);
+                return GestureDetector(
+                  onTap: () => _openSector(s),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: _card,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: c.withOpacity(0.35)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        TextSpan(
-                          text: '$bullPct% ↑',
+                        Text('#${s.trendRank ?? i + 1}',
+                            style: TextStyle(
+                                color: _fire,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w800)),
+                        const SizedBox(width: 6),
+                        Text(s.sector,
+                            style: TextStyle(
+                                color: _t1,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${s.isUp ? '+' : ''}${s.medianPcnt.toStringAsFixed(1)}%',
                           style: TextStyle(
-                            color: _bull,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        TextSpan(
-                          text: '  ·  ',
-                          style: TextStyle(
-                            color: _t3,
-                            fontSize: 12,
-                          ),
-                        ),
-                        TextSpan(
-                          text: '$bearPct% ↓',
-                          style: TextStyle(
-                            color: _bear,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
+                              color: c,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700),
                         ),
                       ],
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              // Segmented bar — proportional to actual sector split
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LayoutBuilder(
-                  builder: (ctx, bc) {
-                    final bullWidth = bc.maxWidth * bullRatio * t;
-                    final bearWidth = bc.maxWidth * bearRatio * t;
-                    // 2px gap between segments so tiny side is still visible
-                    final gap = (bullWidth > 2 && bearWidth > 2) ? 2.0 : 0.0;
-                    return SizedBox(
-                      height: 8,
-                      child: Row(
-                        children: [
-                          if (bullWidth > 0)
-                            Container(
-                              width:
-                                  (bullWidth - gap / 2).clamp(0.0, bc.maxWidth),
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: _bull,
-                                borderRadius: BorderRadius.only(
-                                  topLeft: const Radius.circular(4),
-                                  bottomLeft: const Radius.circular(4),
-                                  topRight: gap == 0
-                                      ? const Radius.circular(4)
-                                      : Radius.zero,
-                                  bottomRight: gap == 0
-                                      ? const Radius.circular(4)
-                                      : Radius.zero,
-                                ),
-                              ),
-                            ),
-                          SizedBox(width: gap),
-                          if (bearWidth > 0)
-                            Container(
-                              width:
-                                  (bearWidth - gap / 2).clamp(0.0, bc.maxWidth),
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: _bear,
-                                borderRadius: BorderRadius.only(
-                                  topRight: const Radius.circular(4),
-                                  bottomRight: const Radius.circular(4),
-                                  topLeft: gap == 0
-                                      ? const Radius.circular(4)
-                                      : Radius.zero,
-                                  bottomLeft: gap == 0
-                                      ? const Radius.circular(4)
-                                      : Radius.zero,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ─── Tab bar (pinned under the app bar) ────────────────────────────────────
+  Widget _buildTabBar() {
+    return Container(
+      color: _surface,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Container(
+        height: 40,
+        decoration: BoxDecoration(
+          color: _elevated,
+          borderRadius: BorderRadius.circular(_T.r),
+          border: Border.all(color: _border),
+        ),
+        child: TabBar(
+          controller: _tabController,
+          indicator: BoxDecoration(
+            color: _card,
+            borderRadius: BorderRadius.circular(_T.r - 2),
+            border: Border.all(color: _border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(_dark ? 0.3 : 0.07),
+                blurRadius: 6,
+                offset: const Offset(0, 1),
               ),
             ],
           ),
-        );
-      },
-    );
-  }
-
-  Widget _breadthChip(String label, Color c, IconData icon) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 13, color: c),
-        const SizedBox(width: 4),
-        Text(label,
-            style:
-                TextStyle(color: c, fontSize: 12, fontWeight: FontWeight.w600)),
-      ],
-    );
-  }
-
-  // ─── Tab bar ──────────────────────────────────────────────────────────────
-  Widget _buildTabBar() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-      height: 46,
-      decoration: BoxDecoration(
-        color: _elevated,
-        borderRadius: BorderRadius.circular(_T.r),
-        border: Border.all(color: _border),
-      ),
-      child: TabBar(
-        controller: _tabController,
-        indicator: BoxDecoration(
-          color: _card,
-          borderRadius: BorderRadius.circular(_T.r - 2),
-          border: Border.all(color: _border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(_dark ? 0.3 : 0.07),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
+          indicatorSize: TabBarIndicatorSize.tab,
+          indicatorPadding: const EdgeInsets.all(3),
+          dividerColor: Colors.transparent,
+          labelPadding: EdgeInsets.zero,
+          labelColor: _t1,
+          unselectedLabelColor: _t2,
+          labelStyle:
+              const TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
+          unselectedLabelStyle:
+              const TextStyle(fontWeight: FontWeight.w500, fontSize: 12.5),
+          tabs: [
+            _tab('Going up', Icons.trending_up_rounded, _rising.length, _bull),
+            _tab('Going down', Icons.trending_down_rounded, _falling.length,
+                _bear),
           ],
         ),
-        indicatorSize: TabBarIndicatorSize.tab,
-        indicatorPadding: const EdgeInsets.all(3),
-        dividerColor: Colors.transparent,
-        labelPadding: EdgeInsets.zero,
-        labelColor: _t1,
-        unselectedLabelColor: _t2,
-        labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-        unselectedLabelStyle:
-            const TextStyle(fontWeight: FontWeight.w500, fontSize: 13),
-        tabs: [
-          _tab('Bullish', Icons.trending_up_rounded, _bullishSectors.length,
-              _bull),
-          _tab('Bearish', Icons.trending_down_rounded, _bearishSectors.length,
-              _bear),
-        ],
       ),
     );
   }
 
   Tab _tab(String label, IconData icon, int count, Color c) => Tab(
-        height: 46,
+        height: 40,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 16, color: c),
-            const SizedBox(width: 6),
+            Icon(icon, size: 14, color: c),
+            const SizedBox(width: 5),
             Text(label),
-            const SizedBox(width: 6),
+            const SizedBox(width: 5),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
               decoration: BoxDecoration(
                 color: c.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(20),
               ),
               child: Text('$count',
                   style: TextStyle(
-                      color: c, fontSize: 11, fontWeight: FontWeight.w700)),
+                      color: c, fontSize: 10.5, fontWeight: FontWeight.w700)),
             ),
           ],
         ),
       );
 
-  // ─── Sector list ──────────────────────────────────────────────────────────
-  Widget _buildList(List<SectorTrend> sectors, {required bool isBullish}) {
-    if (sectors.isEmpty) return _buildEmpty(isBullish);
+  // ─── Sector list (slim rows) ───────────────────────────────────────────────
+  Widget _buildList(List<SectorSummary> sectors, {required bool isUp}) {
+    if (sectors.isEmpty) return _buildEmpty(isUp);
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: sectors.length,
-      itemBuilder: (ctx, i) =>
-          _buildCard(sectors[i], isBullish: isBullish, index: i),
+      itemBuilder: (ctx, i) => _buildCard(sectors[i]),
     );
   }
 
-  Widget _buildCard(SectorTrend s,
-      {required bool isBullish, required int index}) {
-    final accent = _accentFor(isBullish);
-    final strength = isBullish
-        ? (s.bullishScore / 100).clamp(0.0, 1.0)
-        : (s.bearishScore.abs() / 100).clamp(0.0, 1.0);
-    final upPct = (s.positiveStocks / s.totalStocks * 100).round();
-    final downPct = (s.negativeStocks / s.totalStocks * 100).round();
-    final adRatio = s.negativeStocks > 0
-        ? s.positiveStocks / s.negativeStocks
-        : s.positiveStocks.toDouble();
-
-    final String momentumLabel;
-    if (strength > 0.7) {
-      momentumLabel = isBullish ? 'Strong Rally' : 'Heavy Sell-off';
-    } else if (strength > 0.4) {
-      momentumLabel = isBullish ? 'Advancing' : 'Declining';
-    } else {
-      momentumLabel = isBullish ? 'Mild Uptick' : 'Mild Dip';
-    }
+  Widget _buildCard(SectorSummary s) {
+    final accent = _accentFor(s.isUp);
+    final momentum = (s.momentumPct / 100).clamp(0.0, 1.0);
+    final busy = (s.volumeSurgeRatio ?? 0) >= 1.3;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 8),
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(_T.rLg),
+        borderRadius: BorderRadius.circular(_T.r),
         child: InkWell(
-          onTap: () {
-            HapticFeedback.selectionClick();
-            Get.to(() => SectorStocksPage(
-                  sectorName: s.sectorName,
-                  stocks: _sectorData[s.sectorName] ?? [],
-                ));
-          },
-          borderRadius: BorderRadius.circular(_T.rLg),
+          onTap: () => _openSector(s),
+          borderRadius: BorderRadius.circular(_T.r),
           child: Ink(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
               color: _card,
-              borderRadius: BorderRadius.circular(_T.rLg),
-              border: Border.all(color: _border),
+              borderRadius: BorderRadius.circular(_T.r),
+              border: Border.all(
+                color: s.isTrending ? _fire.withOpacity(0.5) : _border,
+                width: s.isTrending ? 1.3 : 1,
+              ),
             ),
-            child: Column(
+            child: Row(
               children: [
-                // ── Header ────────────────────────────────────────────
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
-                  child: Row(
+                // Little vector "sparkline" glyph — drawn in code, no image asset needed.
+                CustomPaint(
+                  size: const Size(34, 34),
+                  painter: _TrendGlyphPainter(
+                      color: accent, momentum: momentum, isUp: s.isUp),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Name + label
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              s.sectorName,
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              s.sector,
                               style: TextStyle(
                                 color: _t1,
-                                fontSize: 16,
+                                fontSize: 14.5,
                                 fontWeight: FontWeight.w700,
-                                letterSpacing: -0.3,
+                                letterSpacing: -0.2,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            const SizedBox(height: 3),
-                            Row(
-                              children: [
-                                Text(
-                                  '${s.totalStocks} stocks',
-                                  style: TextStyle(
-                                      color: _t2,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w400),
-                                ),
-                                Padding(
-                                  padding:
-                                      const EdgeInsets.symmetric(horizontal: 7),
-                                  child: Container(
-                                    width: 3,
-                                    height: 3,
-                                    decoration: BoxDecoration(
-                                        color: _t3, shape: BoxShape.circle),
-                                  ),
-                                ),
-                                Text(
-                                  momentumLabel,
-                                  style: TextStyle(
-                                    color: accent,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
+                          ),
+                          if (s.isTrending) ...[
+                            const SizedBox(width: 5),
+                            Icon(Icons.local_fire_department_rounded,
+                                size: 12, color: _fire),
                           ],
-                        ),
-                      ),
-
-                      // Avg change
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: accent.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                              border:
-                                  Border.all(color: accent.withOpacity(0.3)),
-                            ),
-                            child: Text(
-                              '${isBullish ? '+' : ''}${s.averageChange.toStringAsFixed(2)}%',
-                              style: TextStyle(
-                                color: accent,
-                                fontSize: 15,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.3,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            'avg change',
-                            style: TextStyle(
-                                color: _t3,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w400),
-                          ),
                         ],
                       ),
+                      const SizedBox(height: 3),
+                      Text(
+                        '${s.stockCount} stocks · ${s.advancingCount} up, ${s.decliningCount} down${busy ? ' · busy trading' : ''}',
+                        style: TextStyle(
+                            color: _t2,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w400),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ],
                   ),
                 ),
-
-                const SizedBox(height: 16),
-                Divider(height: 1, color: _border),
-
-                // ── Stats row ─────────────────────────────────────────
-                Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                  child: Row(
-                    children: [
-                      _statCell(
-                          value: '${s.positiveStocks}',
-                          sub: '+$upPct%',
-                          label: 'Gainers',
-                          color: _bull,
-                          icon: Icons.arrow_upward_rounded),
-                      _vDivider(),
-                      _statCell(
-                          value: '${s.negativeStocks}',
-                          sub: '-$downPct%',
-                          label: 'Losers',
-                          color: _bear,
-                          icon: Icons.arrow_downward_rounded),
-                      _vDivider(),
-                      _adCell(adRatio),
-                    ],
-                  ),
-                ),
-
-                // ── Strength footer ───────────────────────────────────
-                _buildStrengthFooter(strength, accent),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _statCell({
-    required String value,
-    required String sub,
-    required String label,
-    required Color color,
-    required IconData icon,
-  }) {
-    return Expanded(
-      child: Column(
-        children: [
-          Icon(icon, size: 14, color: color.withOpacity(0.7)),
-          const SizedBox(height: 5),
-          Text(value,
-              style: TextStyle(
-                  color: _t1,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.5)),
-          Text(sub,
-              style: TextStyle(
-                  color: color, fontSize: 11, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 1),
-          Text(label,
-              style: TextStyle(
-                  color: _t2, fontSize: 11, fontWeight: FontWeight.w400)),
-        ],
-      ),
-    );
-  }
-
-  Widget _adCell(double ratio) {
-    final Color c;
-    final String label;
-    if (ratio >= 2) {
-      c = _bull;
-      label = 'Strong';
-    } else if (ratio >= 1) {
-      c = _warn;
-      label = 'Moderate';
-    } else {
-      c = _bear;
-      label = 'Weak';
-    }
-
-    return Expanded(
-      child: Column(
-        children: [
-          Icon(Icons.balance_rounded, size: 14, color: c.withOpacity(0.7)),
-          const SizedBox(height: 5),
-          Text(ratio.toStringAsFixed(1),
-              style: TextStyle(
-                  color: _t1,
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.5)),
-          Text(label,
-              style: TextStyle(
-                  color: c, fontSize: 11, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 1),
-          Text('A/D Ratio',
-              style: TextStyle(
-                  color: _t2, fontSize: 11, fontWeight: FontWeight.w400)),
-        ],
-      ),
-    );
-  }
-
-  Widget _vDivider() => Container(width: 1, height: 50, color: _border);
-
-  Widget _buildStrengthFooter(double strength, Color accent) {
-    return Container(
-      decoration: BoxDecoration(
-        color: _elevated,
-        borderRadius: const BorderRadius.vertical(
-          bottom: Radius.circular(_T.rLg),
-        ),
-      ),
-      padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Icon(Icons.bolt_rounded, size: 13, color: _t2),
-              const SizedBox(width: 4),
-              Text(
-                'Trend Strength',
-                style: TextStyle(
-                    color: _t2,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3),
-              ),
-              const Spacer(),
-              Text(
-                '${(strength * 100).toStringAsFixed(0)}%',
-                style: TextStyle(
-                    color: accent, fontSize: 12, fontWeight: FontWeight.w700),
-              ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          LayoutBuilder(
-            builder: (ctx, bc) => Stack(
-              children: [
-                Container(
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: accent.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 1200),
-                  curve: Curves.easeOutExpo,
-                  height: 5,
-                  width: bc.maxWidth * strength,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [accent.withOpacity(0.6), accent],
+                const SizedBox(width: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '${s.isUp ? '+' : ''}${s.medianPcnt.toStringAsFixed(2)}%',
+                      style: TextStyle(
+                        color: accent,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.3,
+                      ),
                     ),
-                    borderRadius: BorderRadius.circular(3),
-                  ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${(momentum * 100).toStringAsFixed(0)}% strength',
+                      style: TextStyle(color: _t3, fontSize: 10),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
 
   // ─── Empty state ──────────────────────────────────────────────────────────
-  Widget _buildEmpty(bool isBullish) {
-    final c = _accentFor(isBullish);
+  Widget _buildEmpty(bool isUp) {
+    final c = _accentFor(isUp);
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 72,
-            height: 72,
+            width: 64,
+            height: 64,
             decoration: BoxDecoration(
               color: c.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(18),
               border: Border.all(color: c.withOpacity(0.2)),
             ),
             child: Icon(
-              isBullish
-                  ? Icons.trending_up_rounded
-                  : Icons.trending_down_rounded,
-              size: 30,
-              color: c,
-            ),
+                isUp ? Icons.trending_up_rounded : Icons.trending_down_rounded,
+                size: 28,
+                color: c),
           ),
-          const SizedBox(height: 20),
-          Text(
-            'No ${isBullish ? 'bullish' : 'bearish'} sectors today',
-            style: TextStyle(
-                color: _t1, fontSize: 17, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Check back once sectors show\nclear directional movement.',
-            style: TextStyle(color: _t2, fontSize: 13),
-            textAlign: TextAlign.center,
-          ),
+          const SizedBox(height: 18),
+          Text('No sectors ${isUp ? 'going up' : 'going down'} today',
+              style: TextStyle(
+                  color: _t1, fontSize: 16, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Text('Check back once the market moves\nmore clearly one way.',
+              style: TextStyle(color: _t2, fontSize: 12.5),
+              textAlign: TextAlign.center),
         ],
       ),
     );
@@ -919,45 +783,40 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 64,
-              height: 64,
+              width: 60,
+              height: 60,
               decoration: BoxDecoration(
                 color: _bear.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(18),
                 border: Border.all(color: _bear.withOpacity(0.3)),
               ),
-              child: Icon(Icons.cloud_off_rounded, color: _bear, size: 28),
+              child: Icon(Icons.cloud_off_rounded, color: _bear, size: 26),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
             Text('Something went wrong',
                 style: TextStyle(
-                    color: _t1, fontSize: 18, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 8),
-            Text(
-              _error ?? 'Unknown error',
-              style: TextStyle(color: _t2, fontSize: 13),
-              textAlign: TextAlign.center,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 24),
+                    color: _t1, fontSize: 17, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(_error ?? 'Unknown error',
+                style: TextStyle(color: _t2, fontSize: 12.5),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 22),
             GestureDetector(
               onTap: _fetchData,
               child: Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 28, vertical: 13),
+                    const EdgeInsets.symmetric(horizontal: 26, vertical: 12),
                 decoration: BoxDecoration(
                   color: _bull,
                   borderRadius: BorderRadius.circular(_T.r),
                 ),
-                child: Text(
-                  'Try again',
-                  style: TextStyle(
-                    color: _dark ? Colors.black : Colors.white,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                  ),
-                ),
+                child: Text('Try again',
+                    style: TextStyle(
+                        color: _dark ? Colors.black : Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13.5)),
               ),
             ),
           ],
@@ -970,56 +829,37 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
   Widget _buildSkeleton() {
     return Column(
       children: [
-        _skel(margin: const EdgeInsets.fromLTRB(20, 16, 20, 0), height: 68),
-        _skel(margin: const EdgeInsets.fromLTRB(20, 12, 20, 0), height: 46),
+        _skel(margin: const EdgeInsets.fromLTRB(16, 12, 16, 0), height: 58),
+        _skel(margin: const EdgeInsets.fromLTRB(16, 10, 16, 0), height: 40),
         Expanded(
           child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-            itemCount: 5,
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            itemCount: 7,
             itemBuilder: (_, i) => Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              height: 165,
+              margin: const EdgeInsets.only(bottom: 8),
+              height: 64,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: _card,
-                borderRadius: BorderRadius.circular(_T.rLg),
+                borderRadius: BorderRadius.circular(_T.r),
                 border: Border.all(color: _border),
               ),
-              child: Padding(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+              child: Row(
+                children: [
+                  _skel(width: 34, height: 34, r: 17),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _skel(width: 44, height: 44, r: _T.rSm),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _skel(width: 130, height: 16),
-                              const SizedBox(height: 6),
-                              _skel(width: 80, height: 12),
-                            ],
-                          ),
-                        ),
-                        _skel(width: 72, height: 34, r: 8),
+                        _skel(width: 120, height: 14),
+                        const SizedBox(height: 6),
+                        _skel(width: 160, height: 11),
                       ],
                     ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        _skel(width: 55, height: 12),
-                        const Spacer(),
-                        _skel(width: 55, height: 12),
-                        const Spacer(),
-                        _skel(width: 55, height: 12),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    _skel(width: double.infinity, height: 5, r: 3),
-                  ],
-                ),
+                  ),
+                  _skel(width: 48, height: 14),
+                ],
               ),
             ),
           ),
@@ -1047,34 +887,77 @@ class _SectorAnalysisPageState extends State<SectorAnalysisPage>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Data model
+// A tiny vector "trend" glyph, drawn with CustomPainter — gives each row a
+// crisp, scalable SVG-style icon without shipping an image asset.
 // ─────────────────────────────────────────────────────────────────────────────
-class SectorTrend {
-  final String sectorName;
-  final int totalStocks;
-  final int positiveStocks;
-  final int negativeStocks;
-  final int above5Percent;
-  final int above2Percent;
-  final int below2Percent;
-  final int below5Percent;
-  final double averageChange;
-  final double bullishScore;
-  final double bearishScore;
-  final double totalVolume;
+class _TrendGlyphPainter extends CustomPainter {
+  final Color color;
+  final double momentum; // 0..1, unused for shape but kept for future tuning
+  final bool isUp;
 
-  const SectorTrend({
-    required this.sectorName,
-    required this.totalStocks,
-    required this.positiveStocks,
-    required this.negativeStocks,
-    required this.above5Percent,
-    required this.above2Percent,
-    required this.below2Percent,
-    required this.below5Percent,
-    required this.averageChange,
-    required this.bullishScore,
-    required this.bearishScore,
-    required this.totalVolume,
-  });
+  _TrendGlyphPainter(
+      {required this.color, required this.momentum, required this.isUp});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    canvas.drawCircle(
+        center, size.width / 2, Paint()..color = color.withOpacity(0.12));
+
+    final w = size.width;
+    final h = size.height;
+    final start = Offset(w * 0.26, isUp ? h * 0.68 : h * 0.32);
+    final end = Offset(w * 0.74, isUp ? h * 0.30 : h * 0.70);
+    final mid = Offset(w * 0.5, isUp ? h * 0.58 : h * 0.42);
+
+    final path = Path()
+      ..moveTo(start.dx, start.dy)
+      ..quadraticBezierTo(mid.dx, mid.dy, end.dx, end.dy);
+
+    final linePaint = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(path, linePaint);
+
+    // arrowhead at the end of the line
+    final angle = (end - mid).direction;
+    const arrowLen = 4.0;
+    final p1 =
+        end - Offset(cos(angle - 0.5) * arrowLen, sin(angle - 0.5) * arrowLen);
+    final p2 =
+        end - Offset(cos(angle + 0.5) * arrowLen, sin(angle + 0.5) * arrowLen);
+    canvas.drawLine(end, p1, linePaint);
+    canvas.drawLine(end, p2, linePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrendGlyphPainter oldDelegate) =>
+      oldDelegate.color != color ||
+      oldDelegate.isUp != isUp ||
+      oldDelegate.momentum != momentum;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pinned sliver header helper (used for the tab bar)
+// ─────────────────────────────────────────────────────────────────────────────
+class _PinnedHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final double height;
+  final Widget child;
+  _PinnedHeaderDelegate({required this.height, required this.child});
+
+  @override
+  double get minExtent => height;
+  @override
+  double get maxExtent => height;
+
+  @override
+  Widget build(
+          BuildContext context, double shrinkOffset, bool overlapsContent) =>
+      child;
+
+  @override
+  bool shouldRebuild(covariant _PinnedHeaderDelegate oldDelegate) =>
+      oldDelegate.height != height || oldDelegate.child != child;
 }

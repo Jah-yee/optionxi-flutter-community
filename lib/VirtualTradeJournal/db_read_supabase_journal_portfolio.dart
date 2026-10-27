@@ -8,6 +8,11 @@ class PortfolioJournalService {
   final SupabaseClient _supabase = Supabase.instance.client;
 
   // --- FETCH METHODS ---
+  // NOTE: the fetch methods below deliberately RETHROW on failure.
+  // They used to swallow the error and return an empty list, which made a
+  // momentary network/auth hiccup look like "you have no positions" and wiped
+  // the screen. Callers now decide how to handle the failure (keep old data,
+  // show a retry banner, etc.).
   Future<List<BasketUserHolding>> fetchHoldings(String suid) async {
     try {
       final response = await _supabase
@@ -19,7 +24,7 @@ class PortfolioJournalService {
           .toList();
     } catch (e) {
       print('Error fetching holdings: $e');
-      return [];
+      rethrow;
     }
   }
 
@@ -34,7 +39,7 @@ class PortfolioJournalService {
           .toList();
     } catch (e) {
       print('Error fetching short positions: $e');
-      return [];
+      rethrow;
     }
   }
 
@@ -58,7 +63,7 @@ class PortfolioJournalService {
           .toList();
     } catch (e) {
       print('Error fetching trade history: $e');
-      return [];
+      rethrow;
     }
   }
 

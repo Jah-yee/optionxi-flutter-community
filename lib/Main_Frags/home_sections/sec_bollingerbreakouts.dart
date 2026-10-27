@@ -392,7 +392,7 @@ class _BollingerBreakoutsScreenState extends State<BollingerBreakoutsScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => BollingerBreakoutsPage(),
+        builder: (context) => BreakoutSignalsPage(),
       ),
     );
   }

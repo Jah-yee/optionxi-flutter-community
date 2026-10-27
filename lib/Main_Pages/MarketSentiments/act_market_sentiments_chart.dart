@@ -592,62 +592,123 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-      padding: const EdgeInsets.all(16),
       decoration: _cardDeco(context),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(symbolLabel(_symbol),
-                  style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                      color: context.sxTextS)),
-              const SizedBox(height: 2),
-              Text(nf.format(last.close),
-                  style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.8,
-                      color: context.sxTextP)),
-            ]),
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        // Remove the default ExpansionTile divider lines
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          expansionAnimationStyle: AnimationStyle(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
           ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: col.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(SX.rSM),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(
-                  isUp
-                      ? Icons.arrow_upward_rounded
-                      : Icons.arrow_downward_rounded,
-                  size: 14,
-                  color: col),
-              const SizedBox(width: 4),
+          // ---- Collapsed (default) single-line header ----
+          title: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Text(
+                  symbolLabel(_symbol),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: context.sxTextS,
+                  ),
+                ),
+              ),
               Text(
-                  '${change.abs().toStringAsFixed(1)} (${pct.abs().toStringAsFixed(2)}%)',
-                  style: TextStyle(
-                      fontSize: 12.5, fontWeight: FontWeight.w700, color: col)),
-            ]),
+                nf.format(last.close),
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
+                  color: context.sxTextP,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: col.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(SX.rSM),
+                ),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(
+                    isUp
+                        ? Icons.arrow_upward_rounded
+                        : Icons.arrow_downward_rounded,
+                    size: 12,
+                    color: col,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    '${change.abs().toStringAsFixed(1)} (${pct.abs().toStringAsFixed(2)}%)',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      color: col,
+                    ),
+                  ),
+                ]),
+              ),
+            ],
           ),
-        ]),
-        const SizedBox(height: 4),
-        Text(isUp ? 'Up since the open' : 'Down since the open',
-            style: TextStyle(fontSize: 11.5, color: context.sxTextS)),
-        const SizedBox(height: 14),
-        Row(children: [
-          _MiniStat(label: 'Open', value: nf.format(first.open)),
-          _MiniStat(label: 'Highest', value: nf.format(hi)),
-          _MiniStat(label: 'Lowest', value: nf.format(lo)),
-        ]),
-        Divider(height: 24, color: context.sxBorder),
-        Text(sentence,
-            style:
-                TextStyle(fontSize: 13, height: 1.4, color: context.sxTextP)),
-      ]),
+          // ---- Expanded content ----
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            nf.format(last.close),
+                            style: TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.8,
+                              color: context.sxTextP,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            isUp ? 'Up since the open' : 'Down since the open',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: context.sxTextS,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Row(children: [
+                  _MiniStat(label: 'Open', value: nf.format(first.open)),
+                  _MiniStat(label: 'Highest', value: nf.format(hi)),
+                  _MiniStat(label: 'Lowest', value: nf.format(lo)),
+                ]),
+                Divider(height: 24, color: context.sxBorder),
+                Text(
+                  sentence,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.4,
+                    color: context.sxTextP,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -776,6 +837,7 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
   ScatterSeries<_EP, DateTime> _marker(
     List<_EP> pts, {
     required Color Function(_EP) color,
+    required Color borderColor,
     required DataMarkerType shape,
     required double size,
     required String name,
@@ -791,9 +853,9 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
           width: size,
           shape: shape,
           borderWidth: 1.5,
-          borderColor: Colors.white,
+          borderColor: borderColor, // ← themed, not hard-coded white
         ),
-        animationDuration: 400,
+        animationDuration: 0, // ← no re-animation on rebuild (anti-flicker)
         name: name,
         enableTooltip: false,
         onPointTap: (args) {
@@ -826,6 +888,13 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
 
     final grid = context.sxTextS.withValues(alpha: 0.18);
     final label = context.sxTextS;
+
+    // Marker outline that reads on both themes:
+    //   dark theme  → white outline on the near-black chart
+    //   light theme → near-black outline on the near-white chart
+    // Red / green fills are unchanged in both modes.
+    final markerBorder =
+        context.isDark ? Colors.white : const Color(0xFF0D0F14);
 
     return SfCartesianChart(
       backgroundColor: Colors.transparent,
@@ -861,18 +930,20 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
           bullColor: SX.bull,
           bearColor: SX.bear,
           enableSolidCandles: true,
-          animationDuration: 350,
+          animationDuration: 0, // ← anti-flicker
           name: 'Price',
         ),
         if (smallUp.isNotEmpty)
           _marker(smallUp,
               color: (_) => SX.bull,
+              borderColor: markerBorder,
               shape: DataMarkerType.diamond,
               size: 9,
               name: 'Up signal'),
         if (smallDown.isNotEmpty)
           _marker(smallDown,
               color: (_) => SX.bear,
+              borderColor: markerBorder,
               shape: DataMarkerType.rectangle,
               size: 8,
               name: 'Down signal'),
@@ -881,6 +952,7 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
               color: (p) => p.signal.probability >= SX.strongProb
                   ? const Color(0xFF1D4ED8)
                   : SX.bull,
+              borderColor: markerBorder,
               shape: DataMarkerType.triangle,
               size: 16,
               name: 'Fresh up move'),
@@ -889,6 +961,7 @@ class _MarketSentimentChartPageState extends State<MarketSentimentChartPage> {
               color: (p) => p.signal.probability >= SX.strongProb
                   ? const Color(0xFFBE123C)
                   : SX.bear,
+              borderColor: markerBorder,
               shape: DataMarkerType.invertedTriangle,
               size: 16,
               name: 'Fresh down move'),
@@ -1259,9 +1332,9 @@ class _SignalSheet extends StatelessWidget {
                   value: '${s.declining}',
                   color: SX.bear),
             ]),
-            group('Gauges pointing up', s.posList, SX.bull),
-            group('Gauges pointing down', s.negList, SX.bear),
-            group('Gauges unsure', s.neutList, SX.neutral),
+            // group('Gauges pointing up', s.posList, SX.bull),
+            // group('Gauges pointing down', s.negList, SX.bear),
+            // group('Gauges unsure', s.neutList, SX.neutral),
             const SizedBox(height: 14),
             TextButton.icon(
               onPressed: () => showSentimentGuide(context),

@@ -1,3 +1,5 @@
+import 'dart:ui' show FontFeature;
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +9,53 @@ import 'package:optionxi/Components/cust_contact_us.dart';
 import 'package:optionxi/PushNotification/notifcation_service_firebase.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timeago/timeago.dart' as timeago;
+
+// =============================================================================
+// DESIGN NOTES
+//
+// - Rows, not cards. Algos are a ledger: full-width rows split by hairlines, so
+//   the list reads like a watchlist instead of a stack of tiles.
+// - The lifecycle track is the one distinctive element. An algo really does
+//   move through a sequence (updated > assigned > on call > phase 1 > deployed),
+//   so each row shows where it is, and the detail screen labels every stage.
+// - Slots are shown as physical slots (filled / empty), not a progress bar.
+// - Signals are a timeline grouped by day, with the time in a fixed left column.
+// - Everything takes its colour from the app's ColorScheme; only the status
+//   colours are custom, and they are theme-aware.
+// =============================================================================
+
+const _tabular = [FontFeature.tabularFigures()];
+
+String _formatClock(DateTime dt) {
+  final h = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+  final m = dt.minute.toString().padLeft(2, '0');
+  return '$h:$m ${dt.hour >= 12 ? 'pm' : 'am'}';
+}
+
+String _formatDay(DateTime dt) {
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec'
+  ];
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(dt.year, dt.month, dt.day);
+  final diff = today.difference(day).inDays;
+  if (diff == 0) return 'Today';
+  if (diff == 1) return 'Yesterday';
+  final base = '${dt.day} ${months[dt.month - 1]}';
+  return dt.year == now.year ? base : '$base ${dt.year}';
+}
 
 // =============================================================================
 // DEPLOYED ALGOS — main screen
@@ -36,7 +85,8 @@ class _DeployedAlgosScreenState extends State<DeployedAlgosScreen> {
     _algosStream = _service.watchAlgos();
     _limitFuture = _service.getAlgoLimit();
     _searchController.addListener(() {
-      setState(() => _query = _searchController.text.trim().toLowerCase());
+      final next = _searchController.text.trim().toLowerCase();
+      if (next != _query) setState(() => _query = next);
     });
 
     _pendingAlgoId = _extractAlgoId(Get.arguments);
@@ -61,15 +111,18 @@ class _DeployedAlgosScreenState extends State<DeployedAlgosScreen> {
     try {
       final algo = await _service.getAlgoById(algoId);
       if (algo == null || !mounted) return;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) =>
-              AlgoNotificationsScreen(algo: algo, service: _service),
-        ),
-      );
+      _openAlgo(algo);
     } catch (e) {
       debugPrint('Failed to open algo $algoId from notification: $e');
     }
+  }
+
+  void _openAlgo(AlgoModel algo) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AlgoNotificationsScreen(algo: algo, service: _service),
+      ),
+    );
   }
 
   @override
@@ -112,341 +165,362 @@ class _DeployedAlgosScreenState extends State<DeployedAlgosScreen> {
       return;
     }
 
-    final created = await showAddAlgoDialog(context, _service);
+    final created = await showAddAlgoSheet(context, _service);
     if (created == true && mounted) {
       setState(() => _limitFuture = _service.getAlgoLimit());
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           behavior: SnackBarBehavior.floating,
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          content: const Row(
-            children: [
-              Icon(Icons.check_circle_rounded, color: Colors.white, size: 18),
-              SizedBox(width: 10),
-              Text('Algo deployed successfully'),
-            ],
-          ),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          content: const Text('Algo deployed'),
         ),
       );
     }
   }
 
   void _showLockedSheet() {
-    final cs = Theme.of(context).colorScheme;
-    final theme = Theme.of(context);
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        margin: const EdgeInsets.all(16),
-        padding: const EdgeInsets.all(22),
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: cs.outlineVariant.withOpacity(0.4)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child:
-                  Icon(Icons.lock_outline_rounded, color: cs.primary, size: 22),
-            ),
-            const SizedBox(height: 16),
-            Text('Algo slot locked',
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 6),
-            Text(
-              'You\'ve used all of your available deployment slots. '
-              'Contact your admin to unlock additional capacity.',
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: cs.onSurfaceVariant, height: 1.45),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 13),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Got it'),
-              ),
-            ),
-          ],
-        ),
-      ),
+    _showInfoSheet(
+      context,
+      icon: Icons.lock_outline_rounded,
+      title: 'All slots are in use',
+      body: 'You\'ve deployed every algo your plan includes. '
+          'Contact your admin to add more slots.',
+      primaryLabel: 'Got it',
     );
   }
 
   void _showSubscribeSheet() {
-    final cs = Theme.of(context).colorScheme;
-    final theme = Theme.of(context);
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => Container(
-        margin: const EdgeInsets.all(16),
-        padding: const EdgeInsets.all(22),
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: cs.outlineVariant.withOpacity(0.4)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final screenContext = context;
+    _showInfoSheet(
+      context,
+      icon: Icons.workspace_premium_rounded,
+      title: 'Deploy your own algos',
+      body: 'Subscribe to run your trading algos and get a notification '
+          'the moment one triggers a signal.',
+      extra: Builder(builder: (context) {
+        final theme = Theme.of(context);
+        final cs = theme.colorScheme;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
           children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Icon(Icons.workspace_premium_rounded,
-                  color: cs.primary, size: 22),
-            ),
-            const SizedBox(height: 16),
-            Text('Algo deployment is a premium feature',
-                style: theme.textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 6),
-            Text(
-              'Subscribe to deploy and monitor your own trading algos '
-              'with live signal notifications.',
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: cs.onSurfaceVariant, height: 1.45),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  Text('₹1,500',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800, color: cs.primary)),
-                  const SizedBox(width: 4),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text('/ month',
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant)),
-                  ),
+            Text('₹1,500',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w800, fontFeatures: _tabular)),
+            const SizedBox(width: 6),
+            Text('per month',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: cs.onSurfaceVariant)),
+          ],
+        );
+      }),
+      primaryLabel: 'Subscribe',
+      onPrimary: () => showContactOptions(
+          screenContext, "I want to subscribe to Algo Deployment"),
+      secondaryLabel: 'Not now',
+    );
+  }
+
+  Widget _buildAllowance(AsyncSnapshot<List<AlgoModel>> snapshot) {
+    return FutureBuilder<int?>(
+      future: _limitFuture,
+      builder: (context, limitSnap) {
+        // Note: a null result is meaningful ("not subscribed"), so check the
+        // connection state rather than hasData.
+        if (limitSnap.connectionState != ConnectionState.done ||
+            limitSnap.hasError ||
+            !snapshot.hasData) {
+          return const SizedBox(height: 4);
+        }
+        final limit = limitSnap.data;
+        if (limit == null) {
+          return _PremiumBanner(onTap: _showSubscribeSheet);
+        }
+        return _SlotsStrip(used: snapshot.data!.length, limit: limit);
+      },
+    );
+  }
+
+  Widget _buildSearch(ColorScheme cs) {
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOutCubic,
+      alignment: Alignment.topCenter,
+      child: _searchOpen
+          ? Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+              child: SearchBar(
+                controller: _searchController,
+                autoFocus: true,
+                hintText: 'Search by name or details',
+                elevation: const WidgetStatePropertyAll(0),
+                backgroundColor:
+                    WidgetStatePropertyAll(cs.surfaceContainerHigh),
+                padding: const WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(horizontal: 16)),
+                shape: WidgetStatePropertyAll(RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14))),
+                leading: Icon(Icons.search_rounded,
+                    size: 20, color: cs.onSurfaceVariant),
+                trailing: [
+                  if (_query.isNotEmpty)
+                    IconButton(
+                      tooltip: 'Clear',
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      onPressed: _searchController.clear,
+                    ),
                 ],
               ),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 13),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  showContactOptions(
-                      context, "I want to subscribe to Algo Deployment");
-                },
-                child: const Text('Subscribe now'),
-              ),
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Maybe later'),
-              ),
-            ),
-          ],
-        ),
-      ),
+            )
+          : const SizedBox(width: double.infinity),
     );
+  }
+
+  List<Widget> _buildContent(
+    AsyncSnapshot<List<AlgoModel>> snapshot,
+    List<AlgoModel> all,
+    List<AlgoModel> filtered,
+  ) {
+    if (snapshot.connectionState == ConnectionState.waiting &&
+        !snapshot.hasData) {
+      return [
+        SliverList.builder(
+          itemCount: 5,
+          itemBuilder: (_, __) => const _AlgoRowSkeleton(),
+        ),
+      ];
+    }
+
+    if (snapshot.hasError) {
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _ErrorState(onRetry: _retry),
+        ),
+      ];
+    }
+
+    if (all.isEmpty) {
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _EmptyState(onTap: _handleAddAlgoTap),
+        ),
+      ];
+    }
+
+    if (filtered.isEmpty) {
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _NoResultsState(query: _searchController.text.trim()),
+        ),
+      ];
+    }
+
+    final cs = Theme.of(context).colorScheme;
+    return [
+      SliverList.separated(
+        itemCount: filtered.length,
+        separatorBuilder: (_, __) => Divider(
+          height: 1,
+          indent: 20,
+          endIndent: 20,
+          color: cs.outlineVariant.withOpacity(0.45),
+        ),
+        itemBuilder: (context, index) {
+          final algo = filtered[index];
+          return AlgoRow(algo: algo, onTap: () => _openAlgo(algo));
+        },
+      ),
+      SliverToBoxAdapter(
+        child: SizedBox(height: 32 + MediaQuery.of(context).padding.bottom),
+      ),
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       backgroundColor: cs.surface,
-      appBar: AppBar(
-        title: const Text('Deployed Algos'),
-        centerTitle: false,
-        scrolledUnderElevation: 1,
-        actions: [
-          IconButton(
-            tooltip: _searchOpen ? 'Close search' : 'Search',
-            icon:
-                Icon(_searchOpen ? Icons.close_rounded : Icons.search_rounded),
-            onPressed: _toggleSearch,
-          ),
-          IconButton.filledTonal(
-            tooltip: 'Add algo',
-            icon: const Icon(Icons.add_rounded),
-            onPressed: _handleAddAlgoTap,
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Column(
-        children: [
-          FutureBuilder<int?>(
-            future: _limitFuture,
-            builder: (context, limitSnap) {
-              return StreamBuilder<List<AlgoModel>>(
-                stream: _service.watchAlgos(),
-                builder: (context, snap) {
-                  final total = snap.data?.length;
-                  if (!limitSnap.hasData || total == null) {
-                    return const SizedBox.shrink();
-                  }
-                  final limit = limitSnap.data;
-                  if (limit == null) {
-                    return _PremiumBanner(onTap: _showSubscribeSheet);
-                  }
-                  return _UsageHeader(used: total, limit: limit);
-                },
-              );
-            },
-          ),
-          AnimatedSize(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut,
-            child: _searchOpen
-                ? Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                    child: TextField(
-                      controller: _searchController,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        hintText: 'Search algos...',
-                        prefixIcon: const Icon(Icons.search_rounded, size: 20),
-                        isDense: true,
-                        filled: true,
-                        fillColor: cs.surfaceContainerHighest.withOpacity(0.5),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
+      body: StreamBuilder<List<AlgoModel>>(
+        stream: _algosStream,
+        builder: (context, snapshot) {
+          final all = snapshot.data ?? const <AlgoModel>[];
+          final filtered = _query.isEmpty
+              ? all
+              : all
+                  .where((a) =>
+                      a.name.toLowerCase().contains(_query) ||
+                      a.details.toLowerCase().contains(_query))
+                  .toList();
+
+          return RefreshIndicator(
+            onRefresh: () async => _retry(),
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                // Fix 1: pinned single-row header so title + actions align.
+                // This screen has a back button, so titleSpacing is left at
+                // its default; use `titleSpacing: 20` instead if this ever
+                // becomes a bottom-nav tab with no back button.
+                SliverAppBar(
+                  pinned: true,
+                  backgroundColor: cs.surface,
+                  surfaceTintColor: Colors.transparent,
+                  scrolledUnderElevation: 0,
+                  centerTitle: false,
+                  title: Text(
+                    'Deployed algos',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                  actions: [
+                    IconButton(
+                      tooltip: _searchOpen ? 'Close search' : 'Search',
+                      icon: Icon(_searchOpen
+                          ? Icons.close_rounded
+                          : Icons.search_rounded),
+                      onPressed: _toggleSearch,
+                    ),
+                    // Fix 2: filledTonal is softer than filled and matches
+                    // the plain search icon.
+                    Padding(
+                      padding: const EdgeInsets.only(right: 12, left: 2),
+                      child: IconButton.filledTonal(
+                        tooltip: 'Deploy an algo',
+                        icon: const Icon(Icons.add_rounded),
+                        onPressed: _handleAddAlgoTap,
                       ),
                     ),
-                  )
-                : const SizedBox.shrink(),
-          ),
-          const SizedBox(height: 4),
-          Expanded(
-            child: StreamBuilder<List<AlgoModel>>(
-              stream: _algosStream,
-              builder: (context, snapshot) {
-                Widget child;
-
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  child = const _AlgoListSkeleton(key: ValueKey('loading'));
-                } else if (snapshot.hasError) {
-                  child = _ErrorState(
-                      key: const ValueKey('error'), onRetry: _retry);
-                } else {
-                  final all = snapshot.data ?? [];
-                  final filtered = all.where((a) {
-                    final matchesQuery = _query.isEmpty ||
-                        a.name.toLowerCase().contains(_query) ||
-                        a.details.toLowerCase().contains(_query);
-                    return matchesQuery;
-                  }).toList();
-
-                  if (all.isEmpty) {
-                    child = _EmptyState(
-                        key: const ValueKey('empty'), onTap: _handleAddAlgoTap);
-                  } else if (filtered.isEmpty) {
-                    child = _NoResultsState(key: const ValueKey('no-results'));
-                  } else {
-                    child = RefreshIndicator(
-                      key: const ValueKey('list'),
-                      onRefresh: () async => _retry(),
-                      child: ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                        itemCount: filtered.length,
-                        itemBuilder: (context, index) {
-                          final algo = filtered[index];
-                          return AlgoCard(
-                            algo: algo,
-                            onTap: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => AlgoNotificationsScreen(
-                                    algo: algo,
-                                    service: _service,
-                                  ),
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    );
-                  }
-                }
-
-                return AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 180),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  child: child,
-                );
-              },
+                  ],
+                ),
+                SliverToBoxAdapter(child: _buildAllowance(snapshot)),
+                SliverToBoxAdapter(child: _buildSearch(cs)),
+                const SliverToBoxAdapter(child: SizedBox(height: 8)),
+                ..._buildContent(snapshot, all, filtered),
+              ],
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 }
 
-// -----------------------------------------------------------------------------
-// Usage header — shows slot consumption
-// -----------------------------------------------------------------------------
+// =============================================================================
+// SHARED SHEET
+// =============================================================================
 
-class _UsageHeader extends StatelessWidget {
+Future<void> _showInfoSheet(
+  BuildContext context, {
+  required IconData icon,
+  required String title,
+  required String body,
+  required String primaryLabel,
+  Widget? extra,
+  VoidCallback? onPrimary,
+  String? secondaryLabel,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    useSafeArea: true,
+    builder: (sheetContext) {
+      final theme = Theme.of(sheetContext);
+      final cs = theme.colorScheme;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(24, 4, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: cs.primary.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: cs.primary, size: 22),
+            ),
+            const SizedBox(height: 18),
+            Text(title,
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            Text(body,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: cs.onSurfaceVariant, height: 1.5)),
+            if (extra != null) ...[
+              const SizedBox(height: 18),
+              extra,
+            ],
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(50),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                onPressed: () {
+                  Navigator.of(sheetContext).pop();
+                  onPrimary?.call();
+                },
+                child: Text(primaryLabel),
+              ),
+            ),
+            if (secondaryLabel != null) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size.fromHeight(46),
+                  ),
+                  onPressed: () => Navigator.of(sheetContext).pop(),
+                  child: Text(secondaryLabel),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    },
+  );
+}
+
+// =============================================================================
+// SLOTS STRIP + PREMIUM BANNER
+// =============================================================================
+
+class _SlotsStrip extends StatelessWidget {
   final int used;
   final int limit;
-  const _UsageHeader({required this.used, required this.limit});
+  const _SlotsStrip({required this.used, required this.limit});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final ratio = limit == 0 ? 0.0 : (used / limit).clamp(0.0, 1.0);
-    final isFull = used >= limit;
+    final free = (limit - used).clamp(0, limit);
+    final isFull = free == 0;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+      // Fix 3: 8px top padding (was 4) for breathing room under the header.
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
         decoration: BoxDecoration(
-          color: cs.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(14),
+          color: cs.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(20),
         ),
         child: Row(
           children: [
@@ -454,38 +528,46 @@ class _UsageHeader extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Text(
-                        'Deployment slots',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                            color: cs.onSurfaceVariant,
-                            fontWeight: FontWeight.w600),
-                      ),
-                      const Spacer(),
-                      Text(
-                        '$used / $limit',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: isFull ? cs.error : cs.onSurface,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
+                  Text(
+                    '$used of $limit slots in use',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700, fontFeatures: _tabular),
                   ),
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: LinearProgressIndicator(
-                      value: ratio,
-                      minHeight: 6,
-                      backgroundColor: cs.surfaceContainerHighest,
-                      valueColor: AlwaysStoppedAnimation(
-                        isFull ? cs.error : cs.primary,
-                      ),
-                    ),
+                  const SizedBox(height: 3),
+                  Text(
+                    isFull
+                        ? 'Contact your admin to add more'
+                        : '$free ${free == 1 ? 'slot' : 'slots'} available',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: cs.onSurfaceVariant),
                   ),
                 ],
               ),
+            ),
+            const SizedBox(width: 12),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(limit, (i) {
+                final filled = i < used;
+                return Padding(
+                  padding: EdgeInsets.only(left: i == 0 ? 0 : 6),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    width: 20,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: filled ? cs.primary : Colors.transparent,
+                      borderRadius: BorderRadius.circular(7),
+                      border: Border.all(
+                        color: filled
+                            ? cs.primary
+                            : cs.outlineVariant.withOpacity(0.9),
+                        width: 1.5,
+                      ),
+                    ),
+                  ),
+                );
+              }),
             ),
           ],
         ),
@@ -494,43 +576,54 @@ class _UsageHeader extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Premium banner — shown when user has no subscription record
-// -----------------------------------------------------------------------------
-
 class _PremiumBanner extends StatelessWidget {
   final VoidCallback onTap;
   const _PremiumBanner({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: cs.primary.withOpacity(0.08),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.workspace_premium_rounded,
-                  color: cs.primary, size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Deploy your first algo — ₹1,500/month',
-                  style: theme.textTheme.labelMedium?.copyWith(
-                      fontWeight: FontWeight.w700, color: cs.primary),
+      // Fix 3: 8px top padding (was 4).
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+      child: Material(
+        color: cs.primaryContainer.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Row(
+              children: [
+                Icon(Icons.workspace_premium_rounded,
+                    color: cs.onPrimaryContainer, size: 26),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Get live signals from your own algos',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: cs.onPrimaryContainer),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '₹1,500 per month',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: cs.onPrimaryContainer.withOpacity(0.8),
+                            fontFeatures: _tabular),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Icon(Icons.chevron_right_rounded, color: cs.primary, size: 18),
-            ],
+                Icon(Icons.arrow_forward_rounded,
+                    color: cs.onPrimaryContainer, size: 20),
+              ],
+            ),
           ),
         ),
       ),
@@ -539,19 +632,217 @@ class _PremiumBanner extends StatelessWidget {
 }
 
 // =============================================================================
-// SKELETON LOADING — subtle, professional pulse (no gradient sweep)
+// ALGO ROW
+// =============================================================================
+
+class AlgoRow extends StatelessWidget {
+  final AlgoModel algo;
+  final VoidCallback onTap;
+
+  const AlgoRow({super.key, required this.algo, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return InkWell(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(
+                  child: Text(
+                    algo.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  timeago.format(
+                      DateTime.fromMillisecondsSinceEpoch(algo.createdAt)),
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(color: cs.onSurfaceVariant),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              algo.details,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: cs.onSurfaceVariant, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                SizedBox(
+                  width: 86,
+                  child: _LifecycleTrack(status: algo.status),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: _StatusLabel(status: algo.status)),
+                _TimeframeTag(timeframe: algo.timeframe),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// LIFECYCLE TRACK, STATUS LABEL, TIMEFRAME TAG
+// =============================================================================
+
+class _LifecycleTrack extends StatelessWidget {
+  final AlgoStatus status;
+  final bool labelled;
+  const _LifecycleTrack({required this.status, this.labelled = false});
+
+  static const _labels = ['Updated', 'Assigned', 'On call', 'Phase 1', 'Live'];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final color = status.color(context);
+    final stage = status.stage;
+    final height = labelled ? 6.0 : 4.0;
+
+    final bars = Row(
+      children: List.generate(_labels.length, (i) {
+        final Color fill;
+        if (stage == null) {
+          fill = color.withOpacity(0.25);
+        } else if (i <= stage) {
+          fill = color;
+        } else {
+          fill = cs.surfaceContainerHighest;
+        }
+        return Expanded(
+          child: Container(
+            height: height,
+            margin: EdgeInsets.only(right: i == _labels.length - 1 ? 0 : 4),
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(height),
+            ),
+          ),
+        );
+      }),
+    );
+
+    if (!labelled) return bars;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        bars,
+        const SizedBox(height: 8),
+        Row(
+          children: List.generate(_labels.length, (i) {
+            final current = stage == i;
+            return Expanded(
+              child: Text(
+                _labels[i],
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: current ? color : cs.onSurfaceVariant,
+                  fontWeight: current ? FontWeight.w700 : FontWeight.w500,
+                ),
+              ),
+            );
+          }),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusLabel extends StatelessWidget {
+  final AlgoStatus status;
+  const _StatusLabel({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = status.color(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 7,
+          height: 7,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            status.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context)
+                .textTheme
+                .labelMedium
+                ?.copyWith(color: color, fontWeight: FontWeight.w700),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TimeframeTag extends StatelessWidget {
+  final String timeframe;
+  const _TimeframeTag({required this.timeframe});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Text(
+        timeframe,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: cs.onSurface,
+          fontWeight: FontWeight.w700,
+          fontFeatures: _tabular,
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// SKELETONS
 // =============================================================================
 
 class _PulseBox extends StatefulWidget {
   final double? width;
   final double height;
-  final BorderRadius borderRadius;
+  final double radius;
 
-  const _PulseBox({
-    this.width,
-    required this.height,
-    this.borderRadius = const BorderRadius.all(Radius.circular(6)),
-  });
+  const _PulseBox({this.width, required this.height, this.radius = 6});
 
   @override
   State<_PulseBox> createState() => _PulseBoxState();
@@ -569,7 +860,7 @@ class _PulseBoxState extends State<_PulseBox>
       vsync: this,
       duration: const Duration(milliseconds: 1100),
     )..repeat(reverse: true);
-    _opacity = Tween<double>(begin: 0.45, end: 0.9).animate(
+    _opacity = Tween<double>(begin: 0.4, end: 0.85).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
     );
   }
@@ -590,127 +881,68 @@ class _PulseBoxState extends State<_PulseBox>
         height: widget.height,
         decoration: BoxDecoration(
           color: cs.surfaceContainerHighest,
-          borderRadius: widget.borderRadius,
+          borderRadius: BorderRadius.circular(widget.radius),
         ),
       ),
     );
   }
 }
 
-class _AlgoCardSkeleton extends StatelessWidget {
-  const _AlgoCardSkeleton();
+class _AlgoRowSkeleton extends StatelessWidget {
+  const _AlgoRowSkeleton();
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Row(
-          children: [
-            const _PulseBox(
-              width: 44,
-              height: 44,
-              borderRadius: BorderRadius.all(Radius.circular(12)),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const _PulseBox(width: 130, height: 14),
-                  const SizedBox(height: 8),
-                  const _PulseBox(width: double.infinity, height: 11),
-                  const SizedBox(height: 6),
-                  const _PulseBox(width: 200, height: 11),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: const [
-                      _PulseBox(
-                        width: 72,
-                        height: 20,
-                        borderRadius: BorderRadius.all(Radius.circular(20)),
-                      ),
-                      SizedBox(width: 8),
-                      _PulseBox(
-                        width: 38,
-                        height: 20,
-                        borderRadius: BorderRadius.all(Radius.circular(20)),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AlgoListSkeleton extends StatelessWidget {
-  const _AlgoListSkeleton({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      itemCount: 5,
-      physics: const NeverScrollableScrollPhysics(),
-      itemBuilder: (context, index) => const _AlgoCardSkeleton(),
-    );
-  }
-}
-
-class _NotificationCardSkeleton extends StatelessWidget {
-  const _NotificationCardSkeleton();
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(14),
-      ),
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(20, 16, 20, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _PulseBox(width: 150, height: 15),
+          SizedBox(height: 10),
+          _PulseBox(width: double.infinity, height: 11),
+          SizedBox(height: 6),
+          _PulseBox(width: 220, height: 11),
+          SizedBox(height: 16),
           Row(
-            children: const [
-              Expanded(child: _PulseBox(width: double.infinity, height: 13)),
+            children: [
+              _PulseBox(width: 86, height: 4, radius: 4),
               SizedBox(width: 12),
-              _PulseBox(width: 44, height: 11),
+              _PulseBox(width: 80, height: 11),
             ],
           ),
-          const SizedBox(height: 8),
-          const _PulseBox(width: double.infinity, height: 11),
-          const SizedBox(height: 6),
-          _PulseBox(width: MediaQuery.of(context).size.width * 0.4, height: 11),
         ],
       ),
     );
   }
 }
 
-class _NotificationsListSkeleton extends StatelessWidget {
-  const _NotificationsListSkeleton();
+class _SignalSkeleton extends StatelessWidget {
+  const _SignalSkeleton();
 
   @override
   Widget build(BuildContext context) {
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      itemCount: 6,
-      physics: const NeverScrollableScrollPhysics(),
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) => const _NotificationCardSkeleton(),
+    return const Padding(
+      padding: EdgeInsets.fromLTRB(20, 0, 20, 26),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 48, child: _PulseBox(height: 11)),
+          SizedBox(width: 48),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _PulseBox(width: 170, height: 14),
+                SizedBox(height: 8),
+                _PulseBox(width: double.infinity, height: 11),
+                SizedBox(height: 6),
+                _PulseBox(width: 120, height: 11),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -719,17 +951,29 @@ class _NotificationsListSkeleton extends StatelessWidget {
 // EMPTY / ERROR / NO-RESULTS STATES
 // =============================================================================
 
-class _ErrorState extends StatelessWidget {
-  final VoidCallback onRetry;
-  const _ErrorState({super.key, required this.onRetry});
+class _StateLayout extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String body;
+  final Widget? action;
+  final Color? iconColor;
+
+  const _StateLayout({
+    required this.icon,
+    required this.title,
+    required this.body,
+    this.action,
+    this.iconColor,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final tint = iconColor ?? cs.primary;
     return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(36, 24, 36, 72),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -737,38 +981,53 @@ class _ErrorState extends StatelessWidget {
               width: 64,
               height: 64,
               decoration: BoxDecoration(
-                color: cs.errorContainer.withOpacity(0.5),
-                shape: BoxShape.circle,
+                color: tint.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(20),
               ),
-              child: Icon(Icons.wifi_off_rounded, size: 28, color: cs.error),
+              child: Icon(icon, size: 28, color: tint),
             ),
-            const SizedBox(height: 18),
-            Text(
-              'Couldn\'t load your algos',
-              style: theme.textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
+            const SizedBox(height: 20),
+            Text(title,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
-            Text(
-              'Check your connection and try again.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(height: 22),
-            OutlinedButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh_rounded, size: 17),
-              label: const Text('Retry'),
-              style: OutlinedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                side: BorderSide(color: cs.outlineVariant),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
+            Text(body,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: cs.onSurfaceVariant, height: 1.45)),
+            if (action != null) ...[
+              const SizedBox(height: 24),
+              action!,
+            ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorState extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _ErrorState({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return _StateLayout(
+      icon: Icons.cloud_off_rounded,
+      iconColor: cs.error,
+      title: 'Couldn\'t load your algos',
+      body: 'Check your connection, then try again.',
+      action: OutlinedButton.icon(
+        onPressed: onRetry,
+        icon: const Icon(Icons.refresh_rounded, size: 18),
+        label: const Text('Try again'),
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(0, 46),
+          padding: const EdgeInsets.symmetric(horizontal: 22),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ),
       ),
     );
@@ -777,54 +1036,24 @@ class _ErrorState extends StatelessWidget {
 
 class _EmptyState extends StatelessWidget {
   final VoidCallback onTap;
-  const _EmptyState({super.key, required this.onTap});
+  const _EmptyState({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 76,
-              height: 76,
-              decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.08),
-                shape: BoxShape.circle,
-              ),
-              child:
-                  Icon(Icons.auto_graph_rounded, size: 34, color: cs.primary),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'No algos deployed yet',
-              style: theme.textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Deploy your first trading algo to start receiving\nlive signal notifications.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant, height: 1.4),
-            ),
-            const SizedBox(height: 22),
-            FilledButton.icon(
-              onPressed: onTap,
-              icon: const Icon(Icons.add_rounded, size: 19),
-              label: const Text('Deploy an algo'),
-              style: FilledButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ],
+    return _StateLayout(
+      icon: Icons.auto_graph_rounded,
+      title: 'No algos deployed yet',
+      body: 'Deploy your first algo to get a notification every time '
+          'it triggers a signal.',
+      action: FilledButton.icon(
+        onPressed: onTap,
+        icon: const Icon(Icons.add_rounded, size: 20),
+        label: const Text('Deploy an algo'),
+        style: FilledButton.styleFrom(
+          minimumSize: const Size(0, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 22),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ),
       ),
     );
@@ -832,41 +1061,23 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _NoResultsState extends StatelessWidget {
-  const _NoResultsState({super.key});
+  final String query;
+  const _NoResultsState({required this.query});
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.search_off_rounded,
-                size: 40, color: cs.onSurfaceVariant),
-            const SizedBox(height: 14),
-            Text(
-              'No matching algos',
-              style: theme.textTheme.titleSmall
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Try a different search term or filter.',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
+    final cs = Theme.of(context).colorScheme;
+    return _StateLayout(
+      icon: Icons.search_off_rounded,
+      iconColor: cs.onSurfaceVariant,
+      title: 'No algos match "$query"',
+      body: 'Try a different name, or search by words in the details.',
     );
   }
 }
 
 // =============================================================================
-// NOTIFICATIONS SCREEN — with pagination and loading states
+// ALGO DETAIL — lifecycle + signal timeline
 // =============================================================================
 
 class AlgoNotificationsScreen extends StatefulWidget {
@@ -907,10 +1118,12 @@ class _AlgoNotificationsScreenState extends State<AlgoNotificationsScreen> {
   }
 
   void _onScroll() {
+    if (!_scrollController.hasClients) return;
     if (_scrollController.position.pixels >=
-            _scrollController.position.maxScrollExtent - 200 &&
+            _scrollController.position.maxScrollExtent - 240 &&
         !_loading &&
-        _hasMore) {
+        _hasMore &&
+        _error == null) {
       _loadPage();
     }
   }
@@ -942,7 +1155,7 @@ class _AlgoNotificationsScreenState extends State<AlgoNotificationsScreen> {
       setState(() {
         _loading = false;
         _initialLoading = false;
-        _error = 'Failed to load notifications';
+        _error = 'Couldn\'t load signals';
       });
     }
   }
@@ -953,317 +1166,359 @@ class _AlgoNotificationsScreenState extends State<AlgoNotificationsScreen> {
       _page = 0;
       _hasMore = true;
       _error = null;
+      _loading = false;
     });
     await _loadPage();
   }
 
+  /// Flattens signals into day headers + signal entries.
+  List<Object> _buildRows() {
+    final rows = <Object>[];
+    String? lastKey;
+    for (final n in _items) {
+      final d = n.dateTime;
+      final key = '${d.year}-${d.month}-${d.day}';
+      if (key != lastKey) {
+        rows.add(_formatDay(d));
+        lastKey = key;
+      }
+      rows.add(n);
+    }
+    return rows;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final algo = widget.algo;
 
     return Scaffold(
       backgroundColor: cs.surface,
-      appBar: AppBar(
-        title: Text(widget.algo.name, overflow: TextOverflow.ellipsis),
-        scrolledUnderElevation: 1,
-      ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(16),
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: CustomScrollView(
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            // Optional: same pinned single-row header. Long algo names get
+            // an ellipsis instead of being squeezed into a large title.
+            SliverAppBar(
+              pinned: true,
+              backgroundColor: cs.surface,
+              surfaceTintColor: Colors.transparent,
+              scrolledUnderElevation: 0,
+              centerTitle: false,
+              title: Text(
+                algo.name,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
             ),
-            child: Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: widget.algo.status.color(context).withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Icon(Icons.auto_graph_rounded,
-                      color: widget.algo.status.color(context), size: 18),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.algo.details,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          StatusPill(status: widget.algo.status),
-                          const SizedBox(width: 8),
-                          _TimeframeChip(timeframe: widget.algo.timeframe),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.schedule_rounded,
-                                  size: 12,
-                                  color: cs.onSurfaceVariant,
-                                ),
-                                const SizedBox(width: 4),
-                                Flexible(
-                                  child: Text(
-                                    timeago.format(
-                                      DateTime.fromMillisecondsSinceEpoch(
-                                          widget.algo.createdAt),
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                    maxLines: 1,
-                                    style: theme.textTheme.labelSmall
-                                        ?.copyWith(color: cs.onSurfaceVariant),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      )
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: _buildBody(),
-          ),
-        ],
+            SliverToBoxAdapter(child: _buildHeader(theme, cs)),
+            SliverToBoxAdapter(child: _buildSignalsHeading(theme, cs)),
+            ..._buildSignals(cs),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildBody() {
-    // Initial loading state
-    if (_initialLoading) {
-      return const _NotificationsListSkeleton();
-    }
-
-    // Error state
-    if (_error != null && _items.isEmpty) {
-      return _buildErrorState();
-    }
-
-    // Empty state
-    if (_items.isEmpty) {
-      return _buildEmptyState();
-    }
-
-    // Notifications list with pagination
-    return RefreshIndicator(
-      onRefresh: _refresh,
-      child: ListView.separated(
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        itemCount: _items.length + (_hasMore ? 1 : 0),
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          // Load more indicator at the bottom
-          if (index >= _items.length) {
-            return _buildLoadMoreIndicator();
-          }
-
-          final notification = _items[index];
-          return _NotificationTile(notification: notification);
-        },
-      ),
-    );
-  }
-
-  Widget _buildLoadMoreIndicator() {
+  Widget _buildHeader(ThemeData theme, ColorScheme cs) {
+    final algo = widget.algo;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Center(
-        child: _loading
-            ? const SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const SizedBox.shrink(),
-      ),
-    );
-  }
-
-  Widget _buildErrorState() {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                color: cs.errorContainer.withOpacity(0.5),
-                shape: BoxShape.circle,
-              ),
-              child:
-                  Icon(Icons.error_outline_rounded, size: 24, color: cs.error),
-            ),
-            const SizedBox(height: 14),
-            Text(
-              _error ?? 'Something went wrong',
-              style: theme.textTheme.titleSmall
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Pull down to refresh, or try again shortly.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(height: 20),
-            OutlinedButton.icon(
-              onPressed: _refresh,
-              icon: const Icon(Icons.refresh_rounded, size: 17),
-              label: const Text('Retry'),
-              style: OutlinedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 68,
-              height: 68,
-              decoration: BoxDecoration(
-                color: cs.primary.withOpacity(0.06),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(Icons.notifications_none_rounded,
-                  size: 30, color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No triggers yet',
-              style: theme.textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Notifications will show up here once this\nalgo triggers a signal.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant, height: 1.4),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _NotificationTile extends StatelessWidget {
-  final AlgoNotificationModel notification;
-  const _NotificationTile({required this.notification});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(14),
-        border: Border(left: BorderSide(color: cs.primary, width: 3)),
-      ),
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text(
+            algo.details,
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: cs.onSurfaceVariant, height: 1.5),
+          ),
+          const SizedBox(height: 22),
+          _LifecycleTrack(status: algo.status, labelled: true),
+          const SizedBox(height: 18),
           Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.bolt_rounded, size: 16, color: cs.primary),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  notification.title,
-                  style: theme.textTheme.titleSmall
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                ),
-              ),
-              const SizedBox(width: 8),
+              _StatusLabel(status: algo.status),
+              const SizedBox(width: 10),
+              _TimeframeTag(timeframe: algo.timeframe),
+              const Spacer(),
               Text(
-                timeago.format(notification.dateTime),
+                'Added ${timeago.format(DateTime.fromMillisecondsSinceEpoch(algo.createdAt))}',
                 style: theme.textTheme.labelSmall
                     ?.copyWith(color: cs.onSurfaceVariant),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            notification.description,
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: cs.onSurfaceVariant, height: 1.35),
-          ),
+          const SizedBox(height: 22),
+          Divider(height: 1, color: cs.outlineVariant.withOpacity(0.5)),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSignalsHeading(ThemeData theme, ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text('Signals',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w800)),
+          const SizedBox(width: 10),
+          if (_items.isNotEmpty)
+            Text(
+              '${_items.length}${_hasMore ? '+' : ''}',
+              style: theme.textTheme.labelLarge?.copyWith(
+                  color: cs.onSurfaceVariant, fontFeatures: _tabular),
+            ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildSignals(ColorScheme cs) {
+    if (_initialLoading) {
+      return [
+        const SliverToBoxAdapter(child: SizedBox(height: 20)),
+        SliverList.builder(
+          itemCount: 5,
+          itemBuilder: (_, __) => const _SignalSkeleton(),
+        ),
+      ];
+    }
+
+    if (_error != null && _items.isEmpty) {
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _StateLayout(
+            icon: Icons.cloud_off_rounded,
+            iconColor: cs.error,
+            title: _error!,
+            body: 'Check your connection, then try again.',
+            action: OutlinedButton.icon(
+              onPressed: _refresh,
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Try again'),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(0, 46),
+                padding: const EdgeInsets.symmetric(horizontal: 22),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+              ),
+            ),
+          ),
+        ),
+      ];
+    }
+
+    if (_items.isEmpty) {
+      return [
+        const SliverFillRemaining(
+          hasScrollBody: false,
+          child: _StateLayout(
+            icon: Icons.notifications_none_rounded,
+            title: 'No signals yet',
+            body: 'When this algo triggers, the signal and its details '
+                'will appear here.',
+          ),
+        ),
+      ];
+    }
+
+    final rows = _buildRows();
+    final bottomPad = 32 + MediaQuery.of(context).padding.bottom;
+
+    return [
+      SliverList.builder(
+        itemCount: rows.length,
+        itemBuilder: (context, index) {
+          final row = rows[index];
+          if (row is String) return _DayHeader(label: row);
+          final notification = row as AlgoNotificationModel;
+          final isFirst = identical(notification, _items.first);
+          final isLast = index == rows.length - 1 && !_hasMore;
+          return _SignalTile(
+            notification: notification,
+            isFirst: isFirst,
+            isLast: isLast,
+          );
+        },
+      ),
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.only(top: 8, bottom: bottomPad),
+          child: Center(
+            child: _loading
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : _error != null
+                    ? TextButton.icon(
+                        onPressed: _loadPage,
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('Couldn\'t load more. Try again'),
+                      )
+                    : const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    ];
+  }
+}
+
+class _DayHeader extends StatelessWidget {
+  final String label;
+  const _DayHeader({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
+      child: Text(
+        label,
+        style: theme.textTheme.titleSmall?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+class _SignalTile extends StatelessWidget {
+  final AlgoNotificationModel notification;
+  final bool isFirst;
+  final bool isLast;
+
+  const _SignalTile({
+    required this.notification,
+    required this.isFirst,
+    required this.isLast,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              width: 60,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Text(
+                  _formatClock(notification.dateTime),
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: isFirst ? cs.onSurface : cs.onSurfaceVariant,
+                    fontWeight: isFirst ? FontWeight.w700 : FontWeight.w500,
+                    fontFeatures: _tabular,
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 28,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const SizedBox(height: 4),
+                  Container(
+                    width: 11,
+                    height: 11,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isFirst ? cs.primary : cs.surface,
+                      border: Border.all(
+                        color: isFirst ? cs.primary : cs.outline,
+                        width: 1.75,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: isLast
+                        ? const SizedBox.shrink()
+                        : Container(
+                            width: 1.5,
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            color: cs.outlineVariant.withOpacity(0.7),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      notification.title,
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w700, height: 1.3),
+                    ),
+                    if (notification.description.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        notification.description,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: cs.onSurfaceVariant, height: 1.45),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 // =============================================================================
-// ADD ALGO DIALOG
+// ADD ALGO — bottom sheet
 // =============================================================================
 
 const List<String> kTimeframes = ['1m', '5m', '15m', '1h', '4h', '1D'];
 
-/// Shows the add-algo dialog. Returns true if an algo was created.
-Future<bool?> showAddAlgoDialog(BuildContext context, AlgoService service) {
-  return showDialog<bool>(
+/// Shows the deploy sheet. Returns true if an algo was created.
+Future<bool?> showAddAlgoSheet(BuildContext context, AlgoService service) {
+  return showModalBottomSheet<bool>(
     context: context,
-    builder: (_) => AddAlgoDialog(service: service),
+    isScrollControlled: true,
+    showDragHandle: true,
+    useSafeArea: true,
+    builder: (_) => AddAlgoSheet(service: service),
   );
 }
 
-class AddAlgoDialog extends StatefulWidget {
+class AddAlgoSheet extends StatefulWidget {
   final AlgoService service;
-  const AddAlgoDialog({super.key, required this.service});
+  const AddAlgoSheet({super.key, required this.service});
 
   @override
-  State<AddAlgoDialog> createState() => _AddAlgoDialogState();
+  State<AddAlgoSheet> createState() => _AddAlgoSheetState();
 }
 
-class _AddAlgoDialogState extends State<AddAlgoDialog> {
+class _AddAlgoSheetState extends State<AddAlgoSheet> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _detailsController = TextEditingController();
@@ -1278,39 +1533,34 @@ class _AddAlgoDialogState extends State<AddAlgoDialog> {
     super.dispose();
   }
 
-  InputDecoration _fieldDecoration(
+  InputDecoration _decoration(
     BuildContext context, {
     required String label,
     String? hint,
   }) {
     final cs = Theme.of(context).colorScheme;
+    OutlineInputBorder border(Color color, double width) => OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: color, width: width),
+        );
     return InputDecoration(
       labelText: label,
       hintText: hint,
+      alignLabelWithHint: true,
       filled: true,
-      fillColor: cs.surfaceContainerHighest.withOpacity(0.45),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide.none,
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide.none,
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: cs.primary, width: 1.5),
-      ),
-      errorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: cs.error, width: 1),
-      ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      fillColor: cs.surfaceContainerHigh,
+      border: border(Colors.transparent, 0),
+      enabledBorder: border(Colors.transparent, 0),
+      focusedBorder: border(cs.primary, 1.5),
+      errorBorder: border(cs.error, 1),
+      focusedErrorBorder: border(cs.error, 1.5),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
     );
   }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
     HapticFeedback.lightImpact();
     setState(() {
       _submitting = true;
@@ -1324,8 +1574,10 @@ class _AddAlgoDialogState extends State<AddAlgoDialog> {
       );
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
-        _errorText = 'Could not deploy algo. Please try again.';
+        _errorText = 'Couldn\'t deploy this algo. Check your connection '
+            'and try again.';
         _submitting = false;
       });
     }
@@ -1336,266 +1588,131 @@ class _AddAlgoDialogState extends State<AddAlgoDialog> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
 
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: cs.primary.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(11),
-                      ),
-                      child: Icon(Icons.rocket_launch_rounded,
-                          color: cs.primary, size: 20),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Deploy New Algo',
-                              style: theme.textTheme.titleMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700)),
-                          const SizedBox(height: 2),
-                          Text(
-                            'This slot locks after deployment',
-                            style: theme.textTheme.bodySmall
-                                ?.copyWith(color: cs.onSurfaceVariant),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 22),
-                TextFormField(
-                  controller: _nameController,
-                  textInputAction: TextInputAction.next,
-                  decoration: _fieldDecoration(
-                    context,
-                    label: 'Algo name',
-                    hint: 'e.g. Nifty Breakout Scalper',
-                  ),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'Name is required'
-                      : null,
-                ),
-                const SizedBox(height: 14),
-                TextFormField(
-                  controller: _detailsController,
-                  maxLines: 3,
-                  decoration: _fieldDecoration(
-                    context,
-                    label: 'Details',
-                    hint: 'Strategy logic, instruments, risk notes...',
-                  ),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'Details are required'
-                      : null,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Time frame',
-                  style: theme.textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w600, color: cs.onSurfaceVariant),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: kTimeframes.map((tf) {
-                    final selected = tf == _timeframe;
-                    return ChoiceChip(
-                      label: Text(tf),
-                      selected: selected,
-                      showCheckmark: false,
-                      labelStyle: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: selected ? cs.onPrimary : cs.onSurfaceVariant,
-                      ),
-                      selectedColor: cs.primary,
-                      backgroundColor:
-                          cs.surfaceContainerHighest.withOpacity(0.55),
-                      side: BorderSide.none,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20)),
-                      onSelected: (_) => setState(() => _timeframe = tf),
-                    );
-                  }).toList(),
-                ),
-                if (_errorText != null) ...[
-                  const SizedBox(height: 14),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: cs.errorContainer.withOpacity(0.4),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.error_outline_rounded,
-                            size: 17, color: cs.error),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(_errorText!,
-                              style: TextStyle(color: cs.error, fontSize: 13)),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 13),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: _submitting
-                            ? null
-                            : () => Navigator.of(context).pop(false),
-                        child: const Text('Cancel'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: FilledButton(
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 13),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: _submitting ? null : _submit,
-                        child: _submitting
-                            ? SizedBox(
-                                width: 17,
-                                height: 17,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor:
-                                      AlwaysStoppedAnimation(cs.onPrimary),
-                                ),
-                              )
-                            : const Text('Deploy'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// =============================================================================
-// ALGO CARD + CHIPS
-// =============================================================================
-
-class AlgoCard extends StatelessWidget {
-  final AlgoModel algo;
-  final VoidCallback onTap;
-
-  const AlgoCard({super.key, required this.algo, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final statusColor = algo.status.color(context);
-
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Material(
-        color: cs.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(16),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () {
-            HapticFeedback.selectionClick();
-            onTap();
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              border: Border(left: BorderSide(color: statusColor, width: 3)),
-            ),
-            padding: const EdgeInsets.fromLTRB(13, 14, 14, 14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Deploy an algo',
+                  style: theme.textTheme.titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              Text(
+                'This uses one of your slots, and the slot stays locked '
+                'after you deploy.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant, height: 1.45),
+              ),
+              const SizedBox(height: 22),
+              TextFormField(
+                controller: _nameController,
+                textInputAction: TextInputAction.next,
+                textCapitalization: TextCapitalization.words,
+                enabled: !_submitting,
+                decoration: _decoration(
+                  context,
+                  label: 'Algo name',
+                  hint: 'e.g. Nifty Breakout Scalper',
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Enter a name for this algo'
+                    : null,
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: _detailsController,
+                minLines: 3,
+                maxLines: 5,
+                enabled: !_submitting,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: _decoration(
+                  context,
+                  label: 'Details',
+                  hint: 'Strategy logic, instruments, risk notes',
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Add a few details about the strategy'
+                    : null,
+              ),
+              const SizedBox(height: 20),
+              Text('Timeframe',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w600, color: cs.onSurfaceVariant)),
+              const SizedBox(height: 8),
+              _TimeframePicker(
+                value: _timeframe,
+                enabled: !_submitting,
+                onChanged: (tf) {
+                  HapticFeedback.selectionClick();
+                  setState(() => _timeframe = tf);
+                },
+              ),
+              if (_errorText != null) ...[
+                const SizedBox(height: 16),
                 Container(
-                  width: 42,
-                  height: 42,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.1),
+                    color: cs.errorContainer.withOpacity(0.45),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Icon(Icons.auto_graph_rounded,
-                      color: statusColor, size: 20),
-                ),
-                const SizedBox(width: 13),
-                Expanded(
-                  child: Column(
+                  child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        algo.name,
-                        style: theme.textTheme.titleSmall
-                            ?.copyWith(fontWeight: FontWeight.w700),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        algo.details,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: cs.onSurfaceVariant, height: 1.3),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 6,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          StatusPill(status: algo.status),
-                          _TimeframeChip(timeframe: algo.timeframe),
-                          Text(
-                            timeago.format(DateTime.fromMillisecondsSinceEpoch(
-                                algo.createdAt)),
-                            style: theme.textTheme.labelSmall?.copyWith(
-                                color: cs.onSurfaceVariant.withOpacity(0.8)),
-                          ),
-                        ],
+                      Icon(Icons.error_outline_rounded,
+                          size: 18, color: cs.error),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(_errorText!,
+                            style: theme.textTheme.bodySmall
+                                ?.copyWith(color: cs.error, height: 1.4)),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 2),
-                Icon(Icons.chevron_right_rounded,
-                    color: cs.onSurfaceVariant.withOpacity(0.5), size: 20),
               ],
-            ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: _submitting ? null : _submit,
+                  child: _submitting
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(cs.onPrimary),
+                          ),
+                        )
+                      : const Text('Deploy algo'),
+                ),
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size.fromHeight(46),
+                  ),
+                  onPressed: _submitting
+                      ? null
+                      : () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -1603,65 +1720,67 @@ class AlgoCard extends StatelessWidget {
   }
 }
 
-class _TimeframeChip extends StatelessWidget {
-  final String timeframe;
-  const _TimeframeChip({required this.timeframe});
+class _TimeframePicker extends StatelessWidget {
+  final String value;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  const _TimeframePicker({
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        timeframe,
-        style: theme.textTheme.labelSmall
-            ?.copyWith(color: cs.onSurfaceVariant, fontWeight: FontWeight.w600),
-      ),
-    );
-  }
-}
-
-class StatusPill extends StatelessWidget {
-  final AlgoStatus status;
-  const StatusPill({super.key, required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = status.color(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.35), width: 1),
+        color: cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 5,
-            height: 5,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 5),
-          Text(
-            status.label,
-            style: TextStyle(
-                color: color, fontSize: 11.5, fontWeight: FontWeight.w600),
-          ),
-        ],
+        children: kTimeframes.map((tf) {
+          final selected = tf == value;
+          return Expanded(
+            child: Semantics(
+              button: true,
+              selected: selected,
+              label: 'Timeframe $tf',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: enabled ? () => onChanged(tf) : null,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  height: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: selected ? cs.primary : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    tf,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: _tabular,
+                      color: selected ? cs.onPrimary : cs.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }).toList(),
       ),
     );
   }
 }
 
 // =============================================================================
-// DATA LAYER
+// DATA LAYER (unchanged behaviour)
 // =============================================================================
 
 /// Thin wrapper around Firebase Realtime Database for the "Deployed Algos"
@@ -1743,8 +1862,6 @@ class AlgoService {
         .toList();
   }
 
-  /// Returns the algo limit for the current user, or `null` if no subscription
-  /// record exists (meaning the user is not subscribed at all).
   /// Returns the algo limit for the current user, or `null` if the user
   /// isn't on a plan that grants algo deployment access.
   Future<int?> getAlgoLimit() async {
@@ -1759,7 +1876,7 @@ class AlgoService {
     final planKey = (row['active_plan_key'] as String?)?.toLowerCase();
     if (planKey != 'max') return null; // only the "max" plan unlocks algo slots
 
-    // Optional: treat an expired plan as unsubscribed.
+    // Treat an expired plan as unsubscribed.
     final expiresAtRaw = row['expires_at'] as String?;
     if (expiresAtRaw != null) {
       final expiresAt = DateTime.tryParse(expiresAtRaw);
@@ -1859,11 +1976,11 @@ class AlgoModel {
 /// Stored in Firebase as the raw string in [value].
 enum AlgoStatus {
   updated('updated', 'Updated'),
-  developerAssigned('developer_assigned', 'Developer Assigned'),
-  onCall('on_call', 'On Call'),
+  developerAssigned('developer_assigned', 'Developer assigned'),
+  onCall('on_call', 'On call'),
   phase1('phase_1', 'Phase 1'),
   deployed('deployed', 'Deployed'),
-  clientNotPickingUp('client_not_picking_up', 'Client Not Picking Up'),
+  clientNotPickingUp('client_not_picking_up', 'Client not picking up'),
   cancelling('cancelling', 'Cancelling'),
   cancelled('cancelled', 'Cancelled');
 
@@ -1876,6 +1993,28 @@ enum AlgoStatus {
       (s) => s.value == raw,
       orElse: () => AlgoStatus.updated,
     );
+  }
+
+  /// Position on the five-step deployment track (0 to 4), or `null` for
+  /// states that sit outside the normal path (cancelling, cancelled).
+  /// "Client not picking up" stalls at the on-call step.
+  int? get stage {
+    switch (this) {
+      case AlgoStatus.updated:
+        return 0;
+      case AlgoStatus.developerAssigned:
+        return 1;
+      case AlgoStatus.onCall:
+      case AlgoStatus.clientNotPickingUp:
+        return 2;
+      case AlgoStatus.phase1:
+        return 3;
+      case AlgoStatus.deployed:
+        return 4;
+      case AlgoStatus.cancelling:
+      case AlgoStatus.cancelled:
+        return null;
+    }
   }
 
   /// Theme-aware color so it reads correctly in both light & dark mode.

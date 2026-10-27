@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:optionxi/Components/cust_floating_ai.dart';
+import 'package:optionxi/Main_Pages/ScreenerPro/premium_card.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -2360,182 +2361,6 @@ enum _LoadState { idle, loading, error, loaded }
 const _kOnboardingShownKey = 'screener_pro_onboarding_shown_v2';
 
 // ─────────────────────────────────────────────
-// PREMIUM DIALOG (restyled)
-// ─────────────────────────────────────────────
-
-class _PremiumDialog extends StatelessWidget {
-  const _PremiumDialog();
-
-  @override
-  Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return Dialog(
-      backgroundColor: _T.surface(dark),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      insetPadding: const EdgeInsets.all(16),
-      child: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [Color(0xFFFFB020), Color(0xFFFF7A45)]),
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                          color: const Color(0xFFFF7A45).withOpacity(0.3),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6))
-                    ]),
-                child: const Icon(Icons.workspace_premium_rounded,
-                    color: Colors.white, size: 34),
-              ),
-              const SizedBox(height: 16),
-              Text('Unlock more saved scanners',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: _T.text(dark))),
-              const SizedBox(height: 6),
-              Text(
-                'The free plan lets you keep 10 scanners.\nUpgrade to keep up to 50.',
-                textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontSize: 13, color: _T.sub(dark), height: 1.5),
-              ),
-              const SizedBox(height: 22),
-              _PlanCard(
-                dark: dark,
-                title: 'Pro',
-                price: '₹800',
-                period: '/month',
-                color: _T.gold,
-                features: const [
-                  'Keep 10 → 50 saved scanners',
-                  'Every screener feature included',
-                  'Priority support',
-                ],
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                        colors: [Color(0xFFFFB020), Color(0xFFFF7A45)]),
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [
-                      BoxShadow(
-                          color: const Color(0xFFFF7A45).withOpacity(0.25),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4)),
-                    ],
-                  ),
-                  child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      Get.toNamed("/subscription-razorpay");
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.transparent,
-                      shadowColor: Colors.transparent,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14)),
-                    ),
-                    child: const Text('View Plans & Subscribe',
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 15)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text('Maybe later',
-                    style: TextStyle(color: _T.sub(dark), fontSize: 13)),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PlanCard extends StatelessWidget {
-  final bool dark;
-  final String title, price, period;
-  final Color color;
-  final List<String> features;
-
-  const _PlanCard({
-    required this.dark,
-    required this.title,
-    required this.price,
-    required this.period,
-    required this.color,
-    required this.features,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _T.surface2(dark),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _T.border(dark)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Text(title,
-              style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 15,
-                  color: _T.text(dark))),
-          const Spacer(),
-          RichText(
-            text: TextSpan(children: [
-              TextSpan(
-                  text: price,
-                  style: TextStyle(
-                      color: color, fontSize: 20, fontWeight: FontWeight.w800)),
-              TextSpan(
-                  text: period,
-                  style: TextStyle(
-                      color: _T.sub(dark),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500)),
-            ]),
-          ),
-        ]),
-        const SizedBox(height: 12),
-        ...features.map((f) => Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(children: [
-                Icon(Icons.check_circle_rounded, color: color, size: 14),
-                const SizedBox(width: 6),
-                Text(f,
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: _T.text(dark),
-                        fontWeight: FontWeight.w500)),
-              ]),
-            )),
-      ]),
-    );
-  }
-}
-// ─────────────────────────────────────────────
 // FIRST-OPEN ONBOARDING BOTTOM SHEET
 //   • Shows real Supabase technical_patterns.
 //   • "Show me later" / swipe → leaves key unmarked (shows again).
@@ -2947,7 +2772,7 @@ class _StockScreenerPageProState extends State<StockScreenerPagePro> {
   }
 
   void _openPremiumDialog() {
-    showDialog(context: context, builder: (_) => const _PremiumDialog());
+    showDialog(context: context, builder: (_) => const PremiumDialogCust());
   }
 
   Future<void> _runFilters() async {
@@ -3080,7 +2905,7 @@ class _StockScreenerPageProState extends State<StockScreenerPagePro> {
     if (error != null) {
       if (error.isLimitReached) {
         await showDialog(
-            context: context, builder: (_) => const _PremiumDialog());
+            context: context, builder: (_) => const PremiumDialogCust());
       } else {
         _snack(error.message ?? 'Failed to save', ok: false);
       }
@@ -3859,7 +3684,7 @@ class _SavedScannersPageBridgeState extends State<_SavedScannersPageBridge> {
                       GestureDetector(
                         onTap: () => showDialog(
                             context: context,
-                            builder: (_) => const _PremiumDialog()),
+                            builder: (_) => const PremiumDialogCust()),
                         child: const Row(
                           children: [
                             Text(
@@ -3948,7 +3773,7 @@ class _SavedScannersPageBridgeState extends State<_SavedScannersPageBridge> {
 
   void _runScanner(SavedScanner s) {
     if (_scanners.length >= _subInfo.limit) {
-      showDialog(context: context, builder: (_) => const _PremiumDialog());
+      showDialog(context: context, builder: (_) => const PremiumDialogCust());
       return;
     }
     Navigator.pop(context);

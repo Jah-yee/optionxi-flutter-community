@@ -1,1316 +1,1393 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+// import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:get/get.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:timeago/timeago.dart' as timeago;
 
 // ============================================================================
-// PALETTE (kept visually consistent with MarketSentimentSection's _P)
+// CONFIG
 // ============================================================================
+const String _kPicksTable = 'web_portfolio';
+const String _kAccuracyTable = 'web_daily_accuracy';
+const String _kCandlesTable = 'stock_candles_5m';
+const int _kAccuracyDays = 14;
+const int _kPicksLimit = 600;
+const int _kGreenThreshold = 60;
 
-class _P {
-  final Color cardTop;
-  final Color cardBottom;
-  final Color border;
-  final Color shadow;
-  final Color titleText;
-  final Color subText;
-  final Color mutedText;
-  final Color accentGold;
-  final Color accentIndigo;
-  final Color bull;
-  final Color bear;
-  final Color chipBg;
-  final Color sheetBg;
+const String _kStockLogoBaseUrl =
+    'https://s3.optionxi.com/optionxi-stockimages/stockimages';
+// String get _kStockLogoBaseUrl {
+//   try {
+//     final url = dotenv.env['S3_STOCKIMAGE_URL'] ?? '';
+//     return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+//   } catch (_) {
+//     return '';
+//   }
+// }
 
-  const _P({
-    required this.cardTop,
-    required this.cardBottom,
-    required this.border,
-    required this.shadow,
-    required this.titleText,
-    required this.subText,
-    required this.mutedText,
-    required this.accentGold,
-    required this.accentIndigo,
-    required this.bull,
-    required this.bear,
-    required this.chipBg,
-    required this.sheetBg,
-  });
-
-  factory _P.of(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    if (isDark) {
-      return const _P(
-        cardTop: Color(0xFF171A24),
-        cardBottom: Color(0xFF0E1016),
-        border: Color(0x33F5C451),
-        shadow: Color(0x66000000),
-        titleText: Color(0xFFF5F6FA),
-        subText: Color(0xFFAEB4C2),
-        mutedText: Color(0xFF7B8194),
-        accentGold: Color(0xFFF5C451),
-        accentIndigo: Color(0xFF818CF8),
-        bull: Color(0xFF34D399),
-        bear: Color(0xFFF25F6B),
-        chipBg: Color(0x14FFFFFF),
-        sheetBg: Color(0xFF13151D),
-      );
-    }
-    return const _P(
-      cardTop: Color(0xFFFFFFFF),
-      cardBottom: Color(0xFFF6F3EC),
-      border: Color(0x33C7962C),
-      shadow: Color(0x1A1A1A2E),
-      titleText: Color(0xFF1B1D24),
-      subText: Color(0xFF565B6B),
-      mutedText: Color(0xFF8A8FA0),
-      accentGold: Color(0xFFB8862F),
-      accentIndigo: Color(0xFF6366F1),
-      bull: Color(0xFF12A375),
-      bear: Color(0xFFD8404C),
-      chipBg: Color(0x0A1B1D24),
-      sheetBg: Color(0xFFFFFFFF),
-    );
-  }
-}
-
-// ============================================================================
-// CONFIG — adjust these to match your actual table / routes
-// ============================================================================
-
-const String _kPicksTable = 'ai_picked_stocks';
-const int _kMaxLookbackDays = 7;
-const int _kMaxItemsShown = 5;
-
-// Trading window in IST, expressed as UTC bounds (9:30 AM – 3:15 PM IST)
-const int _kWindowStartUtcHour = 4;
-const int _kWindowStartUtcMinute = 00;
-const int _kWindowEndUtcHour = 9;
-const int _kWindowEndUtcMinute = 45;
-
-// Routes — replace with your actual route names
-const String _kRouteViewAll = '/ai-picked-stocks';
-const String _kRouteAccuracy = '/backtest/ai-picks';
 String _routeForStock(String symbol) => '/stocks/$symbol';
 
+// Route for the full accuracy / backtest page.
+const String _kRouteAccuracy = '/backtest/ai-picks';
+
 // ============================================================================
-// HELPERS
+// PALETTE
 // ============================================================================
+class _P {
+  final Color bg,
+      card,
+      border,
+      title,
+      sub,
+      muted,
+      gold,
+      indigo,
+      bull,
+      bear,
+      amber,
+      empty;
+  const _P(this.bg, this.card, this.border, this.title, this.sub, this.muted,
+      this.gold, this.indigo, this.bull, this.bear, this.amber, this.empty);
 
-DateTime _todayIST() {
-  final now = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
-  return DateTime(now.year, now.month, now.day);
-}
-
-bool _isWeekend(DateTime d) =>
-    d.weekday == DateTime.saturday || d.weekday == DateTime.sunday;
-
-DateTime _prevWeekday(DateTime d) {
-  var x = d.subtract(const Duration(days: 1));
-  while (_isWeekend(x)) {
-    x = x.subtract(const Duration(days: 1));
+  factory _P.of(BuildContext c) {
+    final dark = Theme.of(c).brightness == Brightness.dark;
+    return dark
+        ? const _P(
+            Color(0xFF0E1016),
+            Color(0xFF171A24),
+            Color(0x33F5C451),
+            Color(0xFFF5F6FA),
+            Color(0xFFAEB4C2),
+            Color(0xFF7B8194),
+            Color(0xFFF5C451),
+            Color(0xFF818CF8),
+            Color(0xFF34D399),
+            Color(0xFFF25F6B),
+            Color(0xFFFBBF24),
+            Color(0x14FFFFFF))
+        : const _P(
+            Color(0xFFF6F3EC),
+            Color(0xFFFFFFFF),
+            Color(0x33C7962C),
+            Color(0xFF1B1D24),
+            Color(0xFF565B6B),
+            Color(0xFF8A8FA0),
+            Color(0xFFB8862F),
+            Color(0xFF6366F1),
+            Color(0xFF12A375),
+            Color(0xFFD8404C),
+            Color(0xFFE0A100),
+            Color(0x0F1B1D24));
   }
-  return x;
 }
 
-bool _isSameDate(DateTime a, DateTime b) =>
-    a.year == b.year && a.month == b.month && a.day == b.day;
-
-String _cleanSymbol(String raw) =>
+// ============================================================================
+// MODELS + HELPERS
+// ============================================================================
+DateTime _ist(DateTime d) =>
+    d.toUtc().add(const Duration(hours: 5, minutes: 30));
+String _key(DateTime d) => DateFormat('yyyy-MM-dd').format(d);
+DateTime _parseDay(String s) => DateTime.parse('${s}T00:00:00');
+String _time(DateTime d) => DateFormat('h:mm a').format(_ist(d));
+String _clean(String raw) =>
     raw.replaceAll(RegExp(r'^(NSE|BSE):'), '').replaceAll('-EQ', '');
 
-String _dayLabel(DateTime date) {
-  final today = _todayIST();
-  if (_isSameDate(date, today)) return 'Today';
-  return DateFormat('EEE, d MMM').format(date);
-}
-
-String _pickDateTimeLabel(DateTime t) {
-  final today = _todayIST();
-  final tDate = DateTime(t.year, t.month, t.day);
-  final datePart =
-      _isSameDate(tDate, today) ? 'Today' : DateFormat('d MMM').format(t);
-  final timePart = DateFormat('h:mm a').format(t);
-  return '$datePart, $timePart';
-}
-
-// ============================================================================
-// MODELS
-// ============================================================================
-
-enum _Status { loading, hasPicks, noPicks, error }
-
-class _RawEntry {
-  final String symbol;
-  final DateTime snapshotTime;
-  final String? sentiment;
-  final double? breakoutClose;
-  final String? sector;
-
-  _RawEntry({
-    required this.symbol,
-    required this.snapshotTime,
-    this.sentiment,
-    this.breakoutClose,
-    this.sector,
-  });
-
-  factory _RawEntry.fromMap(Map<String, dynamic> m) => _RawEntry(
-        symbol: m['symbol'] as String,
-        snapshotTime: DateTime.parse(m['snapshot_time'] as String).toLocal(),
-        sentiment: m['sentiment'] as String?,
-        breakoutClose: (m['breakout_close'] as num?)?.toDouble(),
-        sector: m['sector'] as String?,
-      );
-}
-
 class _Pick {
-  final String symbol;
-  final String cleanSymbol;
-  final String sentiment;
-  final DateTime pickTime;
-  final double startPrice;
-  final double latestPrice;
-  final double gainPcnt;
-  final bool isSuccess;
+  final String symbol, pickDate, sentiment, status;
+  final DateTime entryTime, evalTime;
+  final double entryPrice, evalPrice, pnl;
+  _Pick(Map<String, dynamic> m)
+      : symbol = m['symbol'] as String,
+        pickDate = m['pick_date'] as String,
+        sentiment = (m['sentiment'] as String? ?? 'BULLISH').toUpperCase(),
+        status = m['status'] as String? ?? 'pending',
+        entryTime = DateTime.parse(m['entry_time'] as String),
+        evalTime = DateTime.parse(m['eval_time'] as String),
+        entryPrice = (m['entry_price'] as num).toDouble(),
+        evalPrice = (m['eval_price'] as num).toDouble(),
+        pnl = (m['pnl_pcnt'] as num?)?.toDouble() ?? 0;
 
-  _Pick({
-    required this.symbol,
-    required this.cleanSymbol,
-    required this.sentiment,
-    required this.pickTime,
-    required this.startPrice,
-    required this.latestPrice,
-    required this.gainPcnt,
-    required this.isSuccess,
-  });
+  String get clean => _clean(symbol);
+  bool get bullish => sentiment == 'BULLISH';
+  bool get pending => status == 'pending';
+  bool get isWin => status == 'win';
+  bool get isLoss => status == 'loss';
+  String get ticker {
+    final ex = symbol.split(':').first;
+    return '${clean}${ex == 'BSE' ? '.BO' : '.NS'}';
+  }
+}
+
+class _Day {
+  final String date;
+  final int total, wins, losses;
+  final double? acc;
+  final bool hasPending;
+  _Day(Map<String, dynamic> m)
+      : date = m['pick_date'] as String,
+        total = (m['total_picks'] as num?)?.toInt() ?? 0,
+        wins = (m['wins'] as num?)?.toInt() ?? 0,
+        losses = (m['losses'] as num?)?.toInt() ?? 0,
+        acc = (m['accuracy_pct'] as num?)?.toDouble(),
+        hasPending = m['has_pending'] == true;
+}
+
+class _Candle {
+  final DateTime t;
+  final double o, h, l, c;
+  _Candle(Map<String, dynamic> m)
+      : t = DateTime.parse(m['candle_time'] as String),
+        o = (m['open'] as num).toDouble(),
+        h = (m['high'] as num).toDouble(),
+        l = (m['low'] as num).toDouble(),
+        c = (m['close'] as num).toDouble();
 }
 
 // ============================================================================
-// PUBLIC WIDGET
+// PAGE
 // ============================================================================
-
-/// Compact, fixed-height home-screen card summarizing the latest AI stock
-/// picks (today's, or the most recent trading day with picks). Mirrors the
-/// visual language of MarketSentimentSection: same states, same card shell,
-/// same gold/dark palette.
-class MarketSentimentSection_Stocks extends StatefulWidget {
-  final EdgeInsetsGeometry margin;
-
-  const MarketSentimentSection_Stocks({
-    super.key,
-    this.margin = const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-  });
-
+class AiPicksPortfolioSection extends StatefulWidget {
+  const AiPicksPortfolioSection({super.key});
   @override
-  State<MarketSentimentSection_Stocks> createState() =>
-      _MarketSentimentSection_StocksState();
+  State<AiPicksPortfolioSection> createState() =>
+      _AiPicksPortfolioSectionState();
 }
 
-class _MarketSentimentSection_StocksState
-    extends State<MarketSentimentSection_Stocks> {
-  _Status _status = _Status.loading;
+class _AiPicksPortfolioSectionState extends State<AiPicksPortfolioSection> {
+  static const double _gap = 6;
+  static const _weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
   List<_Pick> _picks = [];
-  DateTime? _pickDate;
-  Timer? _refreshTimer;
+  List<_Day> _days = [];
+  bool _loading = true, _error = false;
+  String? _selected;
+  Timer? _timer;
+  bool _showAll = false;
+  static const int _collapsedCount = 5;
 
   @override
   void initState() {
     super.initState();
-    _refresh();
-    // Light polling while the market's open; harmless the rest of the time.
-    _refreshTimer =
-        Timer.periodic(const Duration(minutes: 2), (_) => _refresh());
+    _load();
+    _timer =
+        Timer.periodic(const Duration(minutes: 2), (_) => _load(silent: true));
   }
 
   @override
   void dispose() {
-    _refreshTimer?.cancel();
+    _timer?.cancel();
     super.dispose();
   }
 
-  bool get _isMarketClosedForDate {
-    final date = _pickDate;
-    if (date == null) return true;
-    final today = _todayIST();
-    if (date.isBefore(today)) return true;
-    final now =
-        DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
-    return now.hour > 15 || (now.hour == 15 && now.minute >= 30);
-  }
-
-  bool get _isLive {
-    final date = _pickDate;
-    if (date == null) return false;
-    if (!_isSameDate(date, _todayIST())) return false;
-    final now =
-        DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
-    final afterOpen = now.hour > 9 || (now.hour == 9 && now.minute >= 15);
-    final beforeClose = now.hour < 15 || (now.hour == 15 && now.minute < 30);
-    return afterOpen && beforeClose && !_isWeekend(now);
-  }
-
-  Future<List<_Pick>> _fetchForDate(DateTime date) async {
-    final start = DateTime.utc(date.year, date.month, date.day,
-        _kWindowStartUtcHour, _kWindowStartUtcMinute);
-    final end = DateTime.utc(date.year, date.month, date.day,
-        _kWindowEndUtcHour, _kWindowEndUtcMinute);
-
-    final rows = await Supabase.instance.client
-        .from(_kPicksTable)
-        .select('symbol,snapshot_time,sentiment,breakout_close,sector')
-        .gte('snapshot_time', start.toIso8601String())
-        .lte('snapshot_time', end.toIso8601String())
-        .order('snapshot_time', ascending: true);
-
-    final entries = (rows as List)
-        .map((e) => _RawEntry.fromMap(e as Map<String, dynamic>))
-        .toList();
-
-    if (entries.isEmpty) return [];
-
-    final bySymbol = <String, List<_RawEntry>>{};
-    for (final e in entries) {
-      bySymbol.putIfAbsent(e.symbol, () => []).add(e);
-    }
-
-    final picks = bySymbol.values.map((list) {
-      list.sort((a, b) => a.snapshotTime.compareTo(b.snapshotTime));
-      final first = list.first;
-      final last = list.last;
-      final startPrice = first.breakoutClose ?? 0;
-      final latestPrice = last.breakoutClose ?? 0;
-      final gain = startPrice > 0
-          ? ((latestPrice - startPrice) / startPrice) * 100
-          : 0.0;
-      final sentiment = (first.sentiment ?? 'BULLISH').toUpperCase();
-      final isSuccess = sentiment == 'BEARISH' ? gain <= 0 : gain > 0;
-
-      return _Pick(
-        symbol: first.symbol,
-        cleanSymbol: _cleanSymbol(first.symbol),
-        sentiment: sentiment,
-        pickTime: first.snapshotTime,
-        startPrice: startPrice,
-        latestPrice: latestPrice,
-        gainPcnt: gain,
-        isSuccess: isSuccess,
-      );
-    }).toList();
-
-    picks.sort((a, b) => b.gainPcnt.compareTo(a.gainPcnt));
-    return picks;
-  }
-
-  Future<void> _refresh() async {
-    if (mounted) setState(() => _status = _Status.loading);
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     try {
-      DateTime date = _todayIST();
-      List<_Pick> found = await _fetchForDate(date);
-
-      int guard = 0;
-      while (found.isEmpty && guard < _kMaxLookbackDays) {
-        date = _prevWeekday(date);
-        found = await _fetchForDate(date);
-        guard++;
-      }
-
-      _pickDate = date;
-      _picks = found;
-
-      if (mounted) {
-        setState(
-            () => _status = found.isEmpty ? _Status.noPicks : _Status.hasPicks);
-      }
+      final db = Supabase.instance.client;
+      final res = await Future.wait([
+        db
+            .from(_kPicksTable)
+            .select()
+            .order('pick_date', ascending: false)
+            .order('entry_time', ascending: false)
+            .limit(_kPicksLimit),
+        db
+            .from(_kAccuracyTable)
+            .select()
+            .order('pick_date', ascending: false)
+            .limit(_kAccuracyDays),
+      ]);
+      final picks = (res[0] as List)
+          .map((e) => _Pick(e as Map<String, dynamic>))
+          .toList();
+      final days = (res[1] as List)
+          .map((e) => _Day(e as Map<String, dynamic>))
+          .toList()
+          .reversed
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _picks = picks;
+        _days = days;
+        _error = false;
+        _loading = false;
+        _selected ??= days.reversed.firstWhereOrNull((d) => d.total > 0)?.date;
+      });
     } catch (_) {
-      if (mounted) setState(() => _status = _Status.error);
+      if (mounted) {
+        setState(() {
+          _error = true;
+          _loading = false;
+        });
+      }
     }
   }
 
-  void _openStockDetail(_Pick pick) {
-    Get.toNamed(
-      _routeForStock(pick.symbol),
-      arguments: {'date': DateFormat('yyyy-MM-dd').format(pick.pickTime)},
-    );
+  List<_Pick> get _dayPicks =>
+      _picks.where((p) => p.pickDate == _selected).toList();
+  _Day? get _dayMeta => _days.firstWhereOrNull((d) => d.date == _selected);
+
+  // ---- calendar -----------------------------------------------------------
+  List<List<DateTime>> _weeks() {
+    if (_days.isEmpty) return [];
+    var start = _parseDay(_days.first.date);
+    start = start.subtract(Duration(days: start.weekday % 7));
+    var end = _parseDay(_days.last.date);
+    end = end.add(Duration(days: 6 - (end.weekday % 7)));
+    final weeks = <List<DateTime>>[];
+    var cur = start;
+    while (!cur.isAfter(end)) {
+      weeks.add(List.generate(7, (i) => cur.add(Duration(days: i))));
+      cur = cur.add(const Duration(days: 7));
+    }
+    return weeks;
   }
 
-  void _openViewAll(DateTime date) {
-    Get.toNamed(
-      _kRouteViewAll,
-      arguments: {'date': DateFormat('yyyy-MM-dd').format(date)},
-    );
+  Color _cellColor(_P p, _Day? d) {
+    if (d == null || d.total == 0) return p.empty;
+    if (d.acc == null) return p.amber.withOpacity(0.55);
+    if (d.acc! >= _kGreenThreshold) {
+      return p.bull.withOpacity(0.45 +
+          0.55 * ((d.acc! - _kGreenThreshold) / (100 - _kGreenThreshold)));
+    }
+    return p.bear.withOpacity(
+        0.45 + 0.55 * ((_kGreenThreshold - d.acc!) / _kGreenThreshold));
   }
 
-  void _openAccuracy(DateTime date) {
-    Get.toNamed(
-      _kRouteAccuracy,
-      arguments: {'date': DateFormat('yyyy-MM-dd').format(date)},
-    );
+  Widget _heatmap(_P p) {
+    final weeks = _weeks();
+    final byDate = {for (final d in _days) d.date: d};
+    final today = _key(_ist(DateTime.now()));
+    final lastDate = _days.isEmpty ? null : _days.last.date;
+
+    Widget pad(Widget child) => Expanded(
+          child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: _gap / 2),
+              child: child),
+        );
+
+    return Column(children: [
+      Row(children: [
+        for (final w in _weekdays)
+          pad(Center(
+            child: Text(w.toUpperCase(),
+                style: TextStyle(
+                    fontSize: 9.5,
+                    letterSpacing: 0.6,
+                    fontWeight: FontWeight.w700,
+                    color: p.muted)),
+          )),
+      ]),
+      const SizedBox(height: 8),
+      for (final week in weeks)
+        Padding(
+          padding: const EdgeInsets.only(bottom: _gap),
+          child: Row(children: [
+            for (final date in week)
+              pad(AspectRatio(
+                aspectRatio: 1,
+                child:
+                    _cellWidget(p, date, byDate[_key(date)], today, lastDate),
+              )),
+          ]),
+        ),
+    ]);
   }
 
-  void _openDetails() {
-    final date = _pickDate ?? _todayIST();
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      isDismissible: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _PicksListSheet(
-        p: _P.of(context),
-        picks: _picks,
-        dayLabel: _dayLabel(date),
-        pickDate: date,
-        isClosed: _isMarketClosedForDate,
-        onTapPick: (pick) {
-          Navigator.pop(context);
-          _openStockDetail(pick);
-        },
-        onViewAll: (d) {
-          Navigator.pop(context);
-          _openViewAll(d);
-        },
-        onAccuracy: (d) {
-          Navigator.pop(context);
-          _openAccuracy(d);
-        },
+  Widget _cellWidget(
+      _P p, DateTime date, _Day? d, String today, String? lastDate) {
+    final k = _key(date);
+    final outOfRange = lastDate != null && k.compareTo(lastDate) > 0;
+    final clickable = d != null && d.total > 0;
+    final sel = _selected == k;
+    final colored = clickable && !outOfRange;
+    final textColor = colored ? Colors.white : p.muted;
+
+    return GestureDetector(
+      onTap: clickable
+          ? () => setState(() {
+                _selected = k;
+                _showAll = false;
+              })
+          : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: outOfRange ? Colors.transparent : _cellColor(p, d),
+          borderRadius: BorderRadius.circular(10),
+          border: sel
+              ? Border.all(color: p.title, width: 2)
+              : (k == today ? Border.all(color: p.gold, width: 1.4) : null),
+        ),
+        child: Stack(children: [
+          Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Text('${date.day}',
+                    style: TextStyle(
+                        fontSize: 9.5,
+                        color: textColor.withOpacity(colored ? 0.75 : 0.6))),
+                const SizedBox(height: 1),
+                Text(
+                  !clickable
+                      ? '·'
+                      : (d!.acc == null ? '—' : '${d.acc!.round()}%'),
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: textColor),
+                ),
+              ]),
+            ),
+          ),
+          if (d?.hasPending ?? false)
+            Positioned(
+              top: 2,
+              right: 2,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration:
+                    BoxDecoration(color: p.amber, shape: BoxShape.circle),
+                child: const Icon(Icons.local_fire_department_rounded,
+                    size: 9, color: Colors.black87),
+              ),
+            ),
+        ]),
       ),
     );
   }
 
+  Widget _legend(_P p) {
+    Widget item(Widget leading, String label) =>
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          leading,
+          const SizedBox(width: 5),
+          Text(label, style: TextStyle(fontSize: 10, color: p.muted)),
+        ]);
+    Widget box(Color c) => Container(
+        width: 11,
+        height: 11,
+        decoration:
+            BoxDecoration(color: c, borderRadius: BorderRadius.circular(3)));
+
+    return Wrap(spacing: 14, runSpacing: 6, children: [
+      item(box(p.bull), '60%+ right'),
+      item(box(p.bear), 'More wrong'),
+      item(box(p.empty), 'Weekend / holiday'),
+      item(Icon(Icons.local_fire_department_rounded, size: 12, color: p.amber),
+          'Result pending'),
+    ]);
+  }
+
+  Widget _stats(_P p) {
+    final scored = _days.where((d) => d.acc != null).toList();
+    final avg = scored.isEmpty
+        ? 0
+        : (scored.fold<double>(0, (s, d) => s + d.acc!) / scored.length)
+            .round();
+    final green = scored.where((d) => d.acc! >= _kGreenThreshold).length;
+    Widget tile(String v, String l, Color c) => Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+                color: p.empty, borderRadius: BorderRadius.circular(12)),
+            child: Column(children: [
+              Text(v,
+                  style: TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w800, color: c)),
+              const SizedBox(height: 2),
+              Text(l.toUpperCase(),
+                  style: TextStyle(
+                      fontSize: 9.5, letterSpacing: 0.6, color: p.muted)),
+            ]),
+          ),
+        );
+    return Row(children: [
+      tile('$avg%', 'Avg accuracy', p.title),
+      const SizedBox(width: 8),
+      tile('$green', 'Green days', p.bull),
+      const SizedBox(width: 8),
+      tile('${scored.length - green}', 'Red days', p.bear),
+    ]);
+  }
+
+  // ---- build --------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     final p = _P.of(context);
-    final canOpenDetails =
-        _status == _Status.hasPicks || _status == _Status.noPicks;
-
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(22),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(22),
-        onTap: canOpenDetails ? _openDetails : null,
-        child: Ink(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: p.border, width: 1),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [p.cardTop, p.cardBottom],
-            ),
-            boxShadow: [
-              BoxShadow(
-                  color: p.shadow, blurRadius: 24, offset: const Offset(0, 10)),
-            ],
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              child: _buildBody(p),
-            ),
+    Widget body;
+    if (_loading) {
+      body = SizedBox(
+          height: 220,
+          child: Center(
+              child: CircularProgressIndicator(color: p.gold, strokeWidth: 2)));
+    } else if (_error) {
+      body = SizedBox(
+        height: 120,
+        child: Center(
+          child: TextButton.icon(
+            onPressed: _load,
+            icon: Icon(Icons.refresh_rounded, color: p.gold, size: 16),
+            label: Text("Couldn't load picks. Retry",
+                style: TextStyle(color: p.gold)),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildBody(_P p) {
-    switch (_status) {
-      case _Status.loading:
-        return _SkeletonBody(key: const ValueKey('loading'), p: p);
-      case _Status.error:
-        return _ErrorBody(
-            key: const ValueKey('error'), p: p, onRetry: _refresh);
-      case _Status.noPicks:
-        return _NoPicksBody(
-          key: const ValueKey('noPicks'),
-          p: p,
-          onViewAll: () => _openViewAll(_pickDate ?? _todayIST()),
-          onAccuracy: () => _openAccuracy(_pickDate ?? _todayIST()),
-        );
-      case _Status.hasPicks:
-        return _HasPicksBody(
-          key: const ValueKey('hasPicks'),
-          p: p,
-          picks: _picks.take(_kMaxItemsShown).toList(),
-          totalCount: _picks.length,
-          dayLabel: _dayLabel(_pickDate!),
-          isLive: _isLive,
-          isClosed: _isMarketClosedForDate,
-          onViewAll: () => _openViewAll(_pickDate!),
-          onAccuracy: () => _openAccuracy(_pickDate!),
-        );
-    }
-  }
-}
-
-// ============================================================================
-// HEADER (shared shape with MarketSentimentSection's _Header)
-// ============================================================================
-
-class _Header extends StatelessWidget {
-  final _P p;
-  final bool live;
-  final String? tag;
-  const _Header({required this.p, required this.live, this.tag});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration:
-              BoxDecoration(color: p.accentIndigo, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          'Stock Picks',
-          style: TextStyle(
-            color: const Color(0xFF8B96A5),
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.6,
-          ),
-        ),
-        const Spacer(),
-        if (live) ...[
-          _PulsingDot(color: p.bull),
-          const SizedBox(width: 5),
-          Text('LIVE',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.8,
-                color: p.bull,
-              )),
-        ] else if (tag != null) ...[
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-            decoration: BoxDecoration(
-                color: p.chipBg, borderRadius: BorderRadius.circular(6)),
-            child: Text(
-              tag!,
-              style: TextStyle(
-                fontSize: 9.5,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.6,
-                color: p.mutedText,
-              ),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-class _PulsingDot extends StatefulWidget {
-  final Color color;
-  const _PulsingDot({required this.color});
-
-  @override
-  State<_PulsingDot> createState() => _PulsingDotState();
-}
-
-class _PulsingDotState extends State<_PulsingDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 1200))
-    ..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween(begin: 0.35, end: 1.0).animate(_c),
-      child: Container(
-        width: 6,
-        height: 6,
-        decoration: BoxDecoration(shape: BoxShape.circle, color: widget.color),
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// ACTION BUTTONS ROW (View All / Accuracy)
-// ============================================================================
-
-class _ActionButtonsRow extends StatelessWidget {
-  final _P p;
-  final VoidCallback onViewAll;
-  final VoidCallback onAccuracy;
-  const _ActionButtonsRow({
-    required this.p,
-    required this.onViewAll,
-    required this.onAccuracy,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: _ActionButton(
-            p: p,
-            icon: Icons.grid_view_rounded,
-            label: 'View all',
-            filled: true,
-            onTap: onViewAll,
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: _ActionButton(
-            p: p,
-            icon: Icons.insights_rounded,
-            label: 'Accuracy',
-            filled: false,
-            onTap: onAccuracy,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ActionButton extends StatelessWidget {
-  final _P p;
-  final IconData icon;
-  final String label;
-  final bool filled;
-  final VoidCallback onTap;
-  const _ActionButton({
-    required this.p,
-    required this.icon,
-    required this.label,
-    required this.filled,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bg = filled ? p.accentGold : Colors.transparent;
-    final fg = filled ? Colors.black : p.accentGold;
-    return Material(
-      color: bg,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: onTap,
-        child: Container(
-          height: 36,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
-            border: filled
-                ? null
-                : Border.all(color: p.accentGold.withOpacity(0.45)),
-          ),
-          alignment: Alignment.center,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 15, color: fg),
-              const SizedBox(width: 6),
-              Text(label,
-                  style: TextStyle(
-                      fontSize: 12.5, fontWeight: FontWeight.w800, color: fg)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// PICK LIST ROW — single "activity" line item, stacked one below another
-// ============================================================================
-
-class _PickListRow extends StatelessWidget {
-  final _P p;
-  final _Pick pick;
-  final bool showOutcome;
-  final bool isLast;
-  final VoidCallback? onTap; // now nullable
-  const _PickListRow({
-    required this.p,
-    required this.pick,
-    required this.showOutcome,
-    required this.isLast,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final gainColor = pick.gainPcnt >= 0 ? p.bull : p.bear;
-    final bullish = pick.sentiment == 'BULLISH';
-
-    final content = Container(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      decoration: BoxDecoration(
-        border: isLast
-            ? null
-            : Border(bottom: BorderSide(color: p.border, width: 1)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: (bullish ? p.bull : p.bear).withOpacity(0.12),
-              borderRadius: BorderRadius.circular(9),
-            ),
-            alignment: Alignment.center,
-            child: Icon(
-              bullish ? Icons.trending_up_rounded : Icons.trending_down_rounded,
-              size: 16,
-              color: bullish ? p.bull : p.bear,
-            ),
-          ),
-          // Container(
-          //   width: 32,
-          //   height: 32,
-          //   decoration: BoxDecoration(
-          //     color: (bullish ? p.bull : p.bear).withOpacity(0.12),
-          //     borderRadius: BorderRadius.circular(9),
-          //   ),
-          //   child: ClipRRect(
-          //     borderRadius: BorderRadius.circular(9),
-          //     child: CachedNetworkImage(
-          //       imageUrl: '${Constants.OptionXiS3Loc}${pick.cleanSymbol}.png',
-          //       fit: BoxFit.cover,
-          //       placeholder: (context, url) => Image.asset(
-          //         'assets/images/stockdefault.png',
-          //         fit: BoxFit.cover,
-          //       ),
-          //       errorWidget: (context, url, error) => Image.asset(
-          //         'assets/images/stockdefault.png',
-          //         fit: BoxFit.cover,
-          //       ),
-          //     ),
-          //   ),
-          // ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  pick.cleanSymbol,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w800,
-                    color: p.titleText,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '${_pickDateTimeLabel(pick.pickTime)} · ${timeago.format(pick.pickTime)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 11, color: p.mutedText),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${pick.gainPcnt >= 0 ? '+' : ''}${pick.gainPcnt.toStringAsFixed(2)}%',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  color: gainColor,
-                ),
-              ),
-              if (showOutcome) ...[
-                const SizedBox(height: 3),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      pick.isSuccess
-                          ? Icons.check_circle_rounded
-                          : Icons.cancel_rounded,
-                      size: 11,
-                      color: pick.isSuccess ? p.bull : p.bear,
-                    ),
-                    const SizedBox(width: 3),
-                    Text(
-                      pick.isSuccess ? 'Right' : 'Wrong',
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w700,
-                        color: pick.isSuccess ? p.bull : p.bear,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ],
-          ),
-        ],
-      ),
-    );
-
-    if (onTap == null) return content;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: content,
-    );
-  }
-}
-
-// ============================================================================
-// SKELETON BODY
-// ============================================================================
-
-class _SkeletonBody extends StatefulWidget {
-  final _P p;
-  const _SkeletonBody({super.key, required this.p});
-
-  @override
-  State<_SkeletonBody> createState() => _SkeletonBodyState();
-}
-
-class _SkeletonBodyState extends State<_SkeletonBody>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 1100))
-    ..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  Widget _bar(double width, double height, {double radius = 6}) {
-    return Container(
-      width: width,
-      height: height,
-      decoration: BoxDecoration(
-          color: widget.p.chipBg, borderRadius: BorderRadius.circular(radius)),
-    );
-  }
-
-  Widget _row({required bool isLast}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      decoration: BoxDecoration(
-        border: isLast
-            ? null
-            : Border(bottom: BorderSide(color: widget.p.border, width: 1)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: widget.p.chipBg,
-              borderRadius: BorderRadius.circular(9),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _bar(64, 12),
-                const SizedBox(height: 6),
-                _bar(88, 9),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          _bar(40, 12),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: Tween(begin: 0.45, end: 0.9).animate(_c),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(children: [_bar(90, 12), const Spacer(), _bar(40, 12)]),
-          const SizedBox(height: 6),
-          _bar(140, 11),
-          const SizedBox(height: 6),
-          _row(isLast: false),
-          _row(isLast: false),
-          _row(isLast: true),
-          const SizedBox(height: 6),
-          _bar(double.infinity, 34, radius: 10),
-        ],
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// NO PICKS BODY
-// ============================================================================
-
-class _NoPicksBody extends StatelessWidget {
-  final _P p;
-  final VoidCallback onViewAll;
-  final VoidCallback onAccuracy;
-  const _NoPicksBody({
-    super.key,
-    required this.p,
-    required this.onViewAll,
-    required this.onAccuracy,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _Header(p: p, live: false),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Icon(Icons.search_off_rounded, size: 18, color: p.mutedText),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'No picks flagged recently',
-                style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: p.subText),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          "The AI scanned the market but hasn't flagged any breakout candidates in the last few trading days.",
-          style: TextStyle(fontSize: 12, color: p.mutedText),
-        ),
-        const SizedBox(height: 12),
-        _ActionButtonsRow(p: p, onViewAll: onViewAll, onAccuracy: onAccuracy),
-      ],
-    );
-  }
-}
-
-// ============================================================================
-// HAS PICKS BODY
-// ============================================================================
-
-class _HasPicksBody extends StatelessWidget {
-  final _P p;
-  final List<_Pick> picks;
-  final int totalCount;
-  final String dayLabel;
-  final bool isLive;
-  final bool isClosed;
-  final VoidCallback onViewAll;
-  final VoidCallback onAccuracy;
-
-  const _HasPicksBody({
-    super.key,
-    required this.p,
-    required this.picks,
-    required this.totalCount,
-    required this.dayLabel,
-    required this.isLive,
-    required this.isClosed,
-    required this.onViewAll,
-    required this.onAccuracy,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _Header(
-            p: p,
-            live: isLive,
-            tag: isLive ? null : (isClosed ? 'CLOSED' : null)),
-        const SizedBox(height: 4),
-        Text(
-          '$dayLabel · $totalCount stock${totalCount == 1 ? '' : 's'} flagged',
-          style: TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w700, color: p.subText),
-        ),
-        const SizedBox(height: 6),
-        Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (int i = 0; i < picks.length; i++)
-              _PickListRow(
-                p: p,
-                pick: picks[i],
-                showOutcome: isClosed,
-                isLast: i == picks.length - 1,
-                // no onTap — whole card handles the tap now
-              ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        _ActionButtonsRow(p: p, onViewAll: onViewAll, onAccuracy: onAccuracy),
-        const SizedBox(height: 10),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: p.accentGold.withOpacity(0.06),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: p.accentGold.withOpacity(0.15)),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.info_outline_rounded,
-                  size: 13, color: p.accentGold.withOpacity(0.7)),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'AI-picked stocks are for informational purposes only, not investment advice.',
-                  style: TextStyle(
-                      fontSize: 10.5, height: 1.3, color: p.mutedText),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ============================================================================
-// ERROR BODY
-// ============================================================================
-
-class _ErrorBody extends StatelessWidget {
-  final _P p;
-  final VoidCallback onRetry;
-  const _ErrorBody({super.key, required this.p, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _Header(p: p, live: false),
-        const SizedBox(height: 12),
-        Text(
-          "Couldn't load stock picks",
-          style: TextStyle(
-              fontSize: 13, fontWeight: FontWeight.w700, color: p.subText),
-        ),
+      );
+    } else {
+      body = Column(mainAxisSize: MainAxisSize.min, children: [
+        _stats(p),
+        const SizedBox(height: 14),
+        _accuracyGraph(p), // <-- accuracy graph ABOVE calendar
+        const SizedBox(height: 16),
+        _heatmap(p),
         const SizedBox(height: 8),
-        GestureDetector(
-          onTap: onRetry,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.refresh_rounded, size: 14, color: p.accentGold),
-              const SizedBox(width: 4),
-              Text('Retry',
+        _legend(p),
+        const SizedBox(height: 14),
+        _dayPanel(p),
+      ]);
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: p.card,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: p.border),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x1A000000), blurRadius: 20, offset: Offset(0, 8))
+        ],
+      ),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ---- Small eyebrow label ----
+            Row(children: [
+              Container(
+                  width: 8,
+                  height: 8,
+                  decoration:
+                      BoxDecoration(color: p.indigo, shape: BoxShape.circle)),
+              const SizedBox(width: 8),
+              Text('AI PICKS PORTFOLIO',
                   style: TextStyle(
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: FontWeight.w700,
-                      color: p.accentGold)),
-            ],
-          ),
-        ),
-      ],
+                      letterSpacing: 0.6,
+                      color: p.muted)),
+            ]),
+            const SizedBox(height: 10),
+
+            // ---- Heading + subtitle + WhatsApp CTA ----
+            // ---- Heading + WhatsApp CTA ----
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Text(
+                    'See trending stocks, and why.',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: p.title,
+                      height: 1.2,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                _WhatsAppButton(
+                  p: p,
+                  onTap: _openSubscriptionPage,
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+
+            // ---- Subtitle: full width ----
+            SizedBox(
+              width: double.infinity,
+              child: Text(
+                'Our AI scans the market every day and shows you what it picked — and how those picks played out.',
+                style: TextStyle(fontSize: 12.5, color: p.sub, height: 1.4),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            body,
+          ]),
     );
   }
-}
 
-// ============================================================================
-// PICKS LIST SHEET (replaces old _PickDetailSheet)
-// ============================================================================
+  // ==========================================================================
+  // ACCURACY GRAPH (mini bar chart + CTA button) — sits above the calendar.
+  // No scorecard numbers, just the visual and the "view full accuracy" link.
+  // ==========================================================================
+  Widget _accuracyGraph(_P p) {
+    final scored = _days.where((d) => d.acc != null).toList();
+    if (scored.isEmpty) return const SizedBox.shrink();
 
-class _PicksListSheet extends StatelessWidget {
-  final _P p;
-  final List<_Pick> picks;
-  final String dayLabel;
-  final DateTime pickDate;
-  final bool isClosed;
-  final void Function(_Pick pick) onTapPick;
-  final void Function(DateTime date) onViewAll;
-  final void Function(DateTime date) onAccuracy;
+    // Overall accuracy across the window (used only to tint the header dot).
+    final totalWins = scored.fold<int>(0, (s, d) => s + d.wins);
+    final totalLosses = scored.fold<int>(0, (s, d) => s + d.losses);
+    final totalScored = totalWins + totalLosses;
+    final overallAcc = totalScored == 0 ? 0.0 : (totalWins / totalScored) * 100;
+    final headerColor = overallAcc >= _kGreenThreshold ? p.bull : p.bear;
 
-  const _PicksListSheet({
-    required this.p,
-    required this.picks,
-    required this.dayLabel,
-    required this.pickDate,
-    required this.isClosed,
-    required this.onTapPick,
-    required this.onViewAll,
-    required this.onAccuracy,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final screenH = MediaQuery.of(context).size.height;
-    final maxSheetH = screenH * 0.92; // cap
-    final bottomInset = MediaQuery.of(context).padding.bottom +
-        MediaQuery.of(context).viewInsets.bottom;
-
-    // Align + transparent modal route lets this hug its content instead
-    // of stretching a colored box to fill the whole screen.
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maxSheetH),
-      child: Container(
-        decoration: BoxDecoration(
-          color: p.sheetBg,
-          borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(28), // rounder corners
-          ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min, // <- key: hug content
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: p.empty,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: p.border),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ---- Header: title on left, tiny overall % chip on right ----
+          Row(
             children: [
-              // Fixed, non-scrolling header (unchanged)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 36,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 18),
-                        decoration: BoxDecoration(
-                          color: p.border,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: p.accentIndigo.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Icon(Icons.auto_graph_rounded,
-                              color: p.accentIndigo, size: 18),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Stock Picks',
-                                style: TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w800,
-                                  color: p.titleText,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                picks.isEmpty
-                                    ? dayLabel
-                                    : '$dayLabel · ${picks.length} stock${picks.length == 1 ? '' : 's'} flagged',
-                                style:
-                                    TextStyle(fontSize: 12, color: p.mutedText),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
+              Container(
+                width: 7,
+                height: 7,
+                decoration:
+                    BoxDecoration(color: headerColor, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 7),
+              Text(
+                'DAILY ACCURACY',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.8,
+                  color: p.muted,
                 ),
               ),
-              Divider(height: 1, color: p.border),
+              const Spacer(),
+              Text(
+                '${overallAcc.round()}% overall',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  color: headerColor,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
 
-              // Content: sizes to fit, scrolls only if it exceeds maxSheetH
-              Flexible(
-                child: SingleChildScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: EdgeInsets.only(
-                    left: 20,
-                    right: 20,
-                    top: 14,
-                    bottom: bottomInset, // trimmed, was + 24
+          // ---- Bars ----
+          SizedBox(
+            height: 52,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                for (int i = 0; i < scored.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 3),
+                  Expanded(child: _MiniBar(p: p, day: scored[i])),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+
+          // ---- Axis labels ----
+          Row(
+            children: [
+              Text(scored.first.date.substring(5),
+                  style: TextStyle(fontSize: 9, color: p.muted)),
+              const Spacer(),
+              Text('Today', style: TextStyle(fontSize: 9, color: p.muted)),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // ---- "View full accuracy" button ----
+          SizedBox(
+            width: double.infinity,
+            height: 40,
+            child: Material(
+              color: p.indigo.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(10),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: _openAccuracyPage,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: p.indigo.withOpacity(0.35)),
                   ),
-                  child: Column(
+                  alignment: Alignment.center,
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // How it works
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: p.chipBg,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'HOW THIS WORKS',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 0.6,
-                                color: p.mutedText,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            _ExplainLine(
-                              p: p,
-                              icon: Icons.radar_rounded,
-                              text:
-                                  'A few of our market scanners flag stocks independently — when they overlap on the same stock, it gets picked.',
-                            ),
-                            _ExplainLine(
-                              p: p,
-                              icon: Icons.trending_up_rounded,
-                              text:
-                                  'Stocks breaking above recent highs (bullish) or below recent lows (bearish) are tracked in real time.',
-                            ),
-                            _ExplainLine(
-                              p: p,
-                              icon: Icons.update_rounded,
-                              text:
-                                  'Runs on live 5-minute price data while the market is open, so picks can move as the day goes on.',
-                            ),
-                          ],
+                      Icon(Icons.insights_rounded, size: 15, color: p.indigo),
+                      const SizedBox(width: 6),
+                      Text(
+                        'View full accuracy',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: p.indigo,
                         ),
                       ),
-                      const SizedBox(height: 14),
-
-                      if (picks.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            "The AI scanned the market but hasn't flagged any breakout candidates in the last few trading days.",
-                            style: TextStyle(
-                                fontSize: 12.5, height: 1.4, color: p.subText),
-                          ),
-                        )
-                      else
-                        for (int i = 0; i < picks.length; i++)
-                          _PickListRow(
-                            p: p,
-                            pick: picks[i],
-                            showOutcome: isClosed,
-                            isLast: i == picks.length - 1,
-                            onTap: () => onTapPick(picks[i]),
-                          ),
-
-                      const SizedBox(height: 14),
-                      _ActionButtonsRow(
-                        p: p,
-                        onViewAll: () => onViewAll(pickDate),
-                        onAccuracy: () => onAccuracy(pickDate),
-                      ),
-                      const SizedBox(height: 10),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: p.accentGold.withOpacity(0.06),
-                          borderRadius: BorderRadius.circular(8),
-                          border:
-                              Border.all(color: p.accentGold.withOpacity(0.15)),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(Icons.info_outline_rounded,
-                                size: 13, color: p.accentGold.withOpacity(0.7)),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                'AI-picked stocks are for informational purposes only, not investment advice.',
-                                style: TextStyle(
-                                    fontSize: 10.5,
-                                    height: 1.3,
-                                    color: p.mutedText),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+                      const SizedBox(width: 4),
+                      Icon(Icons.arrow_forward_rounded,
+                          size: 14, color: p.indigo),
                     ],
                   ),
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ExplainLine extends StatelessWidget {
-  final _P p;
-  final IconData icon;
-  final String text;
-  const _ExplainLine({required this.p, required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 9),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 15, color: p.mutedText),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              text,
-              style: TextStyle(fontSize: 12.5, height: 1.4, color: p.subText),
             ),
           ),
         ],
       ),
     );
   }
+
+  Widget _dayPanel(_P p) {
+    final picks = _dayPicks;
+    final meta = _dayMeta;
+    final label = _selected == null
+        ? '—'
+        : DateFormat('EEEE, d MMM').format(_parseDay(_selected!));
+    final shown = _showAll ? picks : picks.take(_collapsedCount).toList();
+    final hidden = picks.length - shown.length;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      decoration: BoxDecoration(
+        color: p.empty,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label,
+                          style: TextStyle(
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w800,
+                              color: p.title)),
+                      const SizedBox(height: 2),
+                      Text(
+                          '${picks.length} stock${picks.length == 1 ? '' : 's'} flagged · tap one for the chart',
+                          style: TextStyle(fontSize: 11, color: p.muted)),
+                    ]),
+              ),
+              if (meta?.acc != null)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: (meta!.acc! >= _kGreenThreshold ? p.bull : p.bear)
+                        .withOpacity(0.14),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text('${meta.acc!.round()}%',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13,
+                          color:
+                              meta.acc! >= _kGreenThreshold ? p.bull : p.bear)),
+                ),
+            ]),
+            const SizedBox(height: 4),
+            if (picks.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                child: Center(
+                    child: Text('No picks for this day',
+                        style: TextStyle(color: p.muted, fontSize: 12.5))),
+              )
+            else
+              for (int i = 0; i < shown.length; i++) ...[
+                if (i > 0) Divider(height: 1, color: p.border),
+                _PickRow(
+                    p: p, pick: shown[i], onTap: () => _openChart(shown[i])),
+              ],
+            if (picks.length > _collapsedCount)
+              Center(
+                child: TextButton(
+                  onPressed: () => setState(() => _showAll = !_showAll),
+                  child: Text(_showAll ? 'Show less' : 'Show $hidden more',
+                      style: TextStyle(
+                          color: p.gold,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12.5)),
+                ),
+              ),
+            const SizedBox(height: 4),
+            Text(
+                'AI-picked stocks are for informational purposes only, not investment advice.',
+                style: TextStyle(fontSize: 10, color: p.muted)),
+          ]),
+    );
+  }
+
+  void _openChart(_Pick pick) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ChartSheet(p: _P.of(context), pick: pick),
+    );
+  }
+
+  /// Opens the full AI-picks accuracy / backtest page.
+  void _openAccuracyPage() {
+    final scored = _days.where((d) => d.acc != null).toList();
+    final avgAccuracy = scored.isEmpty
+        ? 0.0
+        : scored.fold<double>(0, (s, d) => s + d.acc!) / scored.length;
+
+    Get.toNamed(
+      _kRouteAccuracy,
+      arguments: {
+        'source': 'ai_picks_portfolio',
+        'days': _kAccuracyDays,
+        'avgAccuracy': avgAccuracy,
+      },
+    );
+  }
+
+  /// Opens the subscription page (WhatsApp alerts signup).
+  /// Adjust the route / page to match your app's navigation setup.
+  void _openSubscriptionPage() {
+    // ---- Option A: named route via GetX ----
+    Get.toNamed('/subscription-razorpay',
+        arguments: {'source': 'ai_picks_whatsapp'});
+
+    // ---- Option B: direct page push ----
+    // Get.to(() => const SubscriptionPage());
+
+    // ---- Option C: open an external URL ----
+    // final uri = Uri.parse('https://optionxi.com/subscription?src=ai_picks');
+    // launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+}
+
+extension _FirstOrNull<T> on Iterable<T> {
+  T? firstWhereOrNull(bool Function(T) test) {
+    for (final e in this) {
+      if (test(e)) return e;
+    }
+    return null;
+  }
+}
+
+// ============================================================================
+// MINI BAR (daily accuracy bar for the graph above the calendar)
+// ============================================================================
+class _MiniBar extends StatelessWidget {
+  final _P p;
+  final _Day day;
+  const _MiniBar({required this.p, required this.day});
+
+  @override
+  Widget build(BuildContext context) {
+    final acc = day.acc ?? 0;
+    final isGreen = acc >= _kGreenThreshold;
+    final color = isGreen ? p.bull : p.bear;
+    final heightFactor = (acc / 100).clamp(0.1, 1.0);
+
+    return Tooltip(
+      message: '${day.date}\n${acc.round()}% · ${day.wins}W / ${day.losses}L',
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return Align(
+                  alignment: Alignment.bottomCenter,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    width: double.infinity,
+                    height: constraints.maxHeight * heightFactor,
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${acc.round()}',
+            style: TextStyle(
+              fontSize: 7.5,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// PICK ROW
+// ============================================================================
+class _PickRow extends StatelessWidget {
+  final _P p;
+  final _Pick pick;
+  final VoidCallback onTap;
+  const _PickRow({required this.p, required this.pick, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final up = pick.pnl >= 0;
+    final gainColor = up ? p.bull : p.bear;
+    final bullish = pick.bullish;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 11),
+        child: Row(children: [
+          // ---- stock logo (with fallback icon) ----
+          _StockLogo(
+            symbol: pick.clean,
+            bullish: bullish,
+            p: p,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(pick.clean,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: p.title)),
+              const SizedBox(height: 2),
+              Text('${bullish ? 'Long' : 'Short'} · ${_time(pick.entryTime)}',
+                  style: TextStyle(fontSize: 11, color: p.muted)),
+            ]),
+          ),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text('${up ? '+' : ''}${pick.pnl.toStringAsFixed(2)}%',
+                style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w800,
+                    color: gainColor)),
+            const SizedBox(height: 3),
+            _StatusBadge(pick: pick, p: p),
+          ]),
+          const SizedBox(width: 4),
+          Icon(Icons.chevron_right_rounded, size: 18, color: p.muted),
+        ]),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// STOCK LOGO WIDGET  (image with fallback to trending icon)
+// ============================================================================
+class _StockLogo extends StatelessWidget {
+  final String symbol;
+  final bool bullish;
+  final _P p;
+  const _StockLogo({
+    required this.symbol,
+    required this.bullish,
+    required this.p,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final iconColor = bullish ? p.bull : p.bear;
+    final fallback = Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        color: iconColor.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Icon(
+        bullish ? Icons.trending_up_rounded : Icons.trending_down_rounded,
+        size: 18,
+        color: iconColor,
+      ),
+    );
+
+    return Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        color: p.empty,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: p.border),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.network(
+          '$_kStockLogoBaseUrl/$symbol.png',
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => fallback,
+          loadingBuilder: (context, child, progress) {
+            if (progress == null) return child;
+            return fallback;
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// STATUS BADGE — tick / cross / live (with icon + label like Next.js)
+// ============================================================================
+class _StatusBadge extends StatelessWidget {
+  final _Pick pick;
+  final _P p;
+  const _StatusBadge({required this.pick, required this.p});
+
+  @override
+  Widget build(BuildContext context) {
+    if (pick.pending) {
+      return Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.schedule_rounded, size: 11, color: p.amber),
+        const SizedBox(width: 3),
+        Text('Live',
+            style: TextStyle(
+                fontSize: 10.5, fontWeight: FontWeight.w700, color: p.amber)),
+      ]);
+    }
+
+    final isWin = pick.isWin;
+    final color = isWin ? p.bull : p.bear;
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(
+        width: 16,
+        height: 16,
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.15),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          isWin ? Icons.check_rounded : Icons.close_rounded,
+          size: 11,
+          color: color,
+        ),
+      ),
+      const SizedBox(width: 4),
+      Text(isWin ? 'Right' : 'Wrong',
+          style: TextStyle(
+              fontSize: 10.5, fontWeight: FontWeight.w700, color: color)),
+    ]);
+  }
+}
+
+// ============================================================================
+// WHATSAPP CTA — opens the subscription page
+// ============================================================================
+class _WhatsAppButton extends StatelessWidget {
+  final _P p;
+  final VoidCallback onTap;
+  const _WhatsAppButton({required this.p, required this.onTap});
+
+  static const _waGreen = Color(0xFF25D366);
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(30),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: _waGreen.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: _waGreen.withOpacity(0.35)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            // WhatsApp glyph (drawn with a CustomPainter so no extra assets)
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CustomPaint(painter: _WhatsAppPainter(color: _waGreen)),
+            ),
+            const SizedBox(width: 6),
+            const Text(
+              'Get alerts',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: _waGreen,
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+class _WhatsAppPainter extends CustomPainter {
+  final Color color;
+  _WhatsAppPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width / 24.0;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    // Outer speech bubble circle
+    final path = Path()
+      ..addOval(
+          Rect.fromCircle(center: Offset(12 * s, 12 * s), radius: 10.5 * s));
+    canvas.drawPath(path, paint);
+
+    // Inner phone glyph in white (cut-out feel)
+    final white = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8 * s
+      ..strokeCap = StrokeCap.round;
+    final inner = Path()
+      ..moveTo(9.2 * s, 8.4 * s)
+      ..quadraticBezierTo(9.0 * s, 12.0 * s, 14.5 * s, 15.4 * s)
+      ..lineTo(15.8 * s, 14.2 * s)
+      ..quadraticBezierTo(16.1 * s, 13.9 * s, 15.8 * s, 13.6 * s)
+      ..lineTo(14.6 * s, 12.6 * s)
+      ..quadraticBezierTo(14.3 * s, 12.4 * s, 14.0 * s, 12.6 * s)
+      ..lineTo(13.0 * s, 13.4 * s)
+      ..quadraticBezierTo(11.6 * s, 12.4 * s, 11.0 * s, 10.9 * s)
+      ..lineTo(11.9 * s, 10.1 * s)
+      ..quadraticBezierTo(12.1 * s, 9.8 * s, 11.9 * s, 9.5 * s)
+      ..lineTo(10.9 * s, 8.3 * s)
+      ..quadraticBezierTo(10.6 * s, 8.0 * s, 10.3 * s, 8.2 * s)
+      ..close();
+    canvas.drawPath(inner, white);
+  }
+
+  @override
+  bool shouldRepaint(covariant _WhatsAppPainter old) => old.color != color;
+}
+
+// ============================================================================
+// CHART SHEET
+// ============================================================================
+class _ChartSheet extends StatefulWidget {
+  final _P p;
+  final _Pick pick;
+  const _ChartSheet({required this.p, required this.pick});
+  @override
+  State<_ChartSheet> createState() => _ChartSheetState();
+}
+
+class _ChartSheetState extends State<_ChartSheet> {
+  List<_Candle> _candles = [];
+  bool _loading = true, _error = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    try {
+      final rows = await Supabase.instance.client
+          .from(_kCandlesTable)
+          .select('candle_time,open,high,low,close,volume')
+          .eq('ticker', widget.pick.ticker)
+          .eq('trading_day', widget.pick.pickDate)
+          .order('candle_time', ascending: true);
+      if (!mounted) return;
+      setState(() {
+        _candles = (rows as List)
+            .map((e) => _Candle(e as Map<String, dynamic>))
+            .toList();
+        _loading = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error = true;
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.p, pick = widget.pick;
+    final profit = pick.pnl >= 0;
+    final c = profit ? p.bull : p.bear;
+
+    Widget stat(String l, String v, [Color? col]) => Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+                color: p.empty, borderRadius: BorderRadius.circular(12)),
+            child: Column(children: [
+              Text(l,
+                  style: TextStyle(
+                      fontSize: 9.5, color: p.muted, letterSpacing: 0.5)),
+              const SizedBox(height: 3),
+              Text(v,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: col ?? p.title)),
+            ]),
+          ),
+        );
+
+    return Container(
+      decoration: BoxDecoration(
+        color: p.card,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      padding: EdgeInsets.fromLTRB(
+          20, 12, 20, MediaQuery.of(context).padding.bottom + 16),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 14),
+                  decoration: BoxDecoration(
+                      color: p.border, borderRadius: BorderRadius.circular(2))),
+            ),
+            Row(children: [
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                          DateFormat('EEEE, d MMM')
+                              .format(_parseDay(pick.pickDate))
+                              .toUpperCase(),
+                          style: TextStyle(
+                              fontSize: 10,
+                              letterSpacing: 1,
+                              color: p.muted,
+                              fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 3),
+                      Row(children: [
+                        Text(pick.clean,
+                            style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                                color: p.title)),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                              color: (pick.bullish ? p.bull : p.bear)
+                                  .withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(20)),
+                          child: Text(pick.bullish ? 'LONG' : 'SHORT',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: pick.bullish ? p.bull : p.bear)),
+                        ),
+                      ]),
+                    ]),
+              ),
+              IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: Icon(Icons.close_rounded, color: p.muted)),
+            ]),
+            const SizedBox(height: 12),
+            Container(
+              height: 230,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                  color: p.empty.withOpacity(0.04),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: p.border)),
+              child: _loading
+                  ? Center(
+                      child: CircularProgressIndicator(
+                          color: p.gold, strokeWidth: 2))
+                  : (_error || _candles.isEmpty)
+                      ? Center(
+                          child: Text(
+                              _error
+                                  ? "Couldn't load candles"
+                                  : 'No candle data for this day yet',
+                              style: TextStyle(fontSize: 12, color: p.muted)))
+                      : ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: CustomPaint(
+                              painter:
+                                  _CandlePainter(_candles, pick, p, profit)),
+                        ),
+            ),
+            const SizedBox(height: 12),
+            Row(children: [
+              stat('ENTRY · ${_time(pick.entryTime)}',
+                  '₹${pick.entryPrice.toStringAsFixed(2)}'),
+              const SizedBox(width: 8),
+              stat('EXIT · ${_time(pick.evalTime)}',
+                  '₹${pick.evalPrice.toStringAsFixed(2)}'),
+              const SizedBox(width: 8),
+              stat("IF FOLLOWED",
+                  '${profit ? '+' : ''}${pick.pnl.toStringAsFixed(2)}%', c),
+            ]),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              height: 44,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: p.gold,
+                  foregroundColor: Colors.black,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                onPressed: () {
+                  Navigator.pop(context);
+                  Get.toNamed(_routeForStock(pick.symbol),
+                      arguments: {'date': pick.pickDate});
+                },
+                icon: const Icon(Icons.north_east_rounded, size: 16),
+                label: const Text('View full details',
+                    style: TextStyle(fontWeight: FontWeight.w800)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Center(
+              child: Text(
+                  'For education only — shows how the pick played out, not a recommendation.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 10, color: p.muted)),
+            ),
+          ]),
+    );
+  }
+}
+
+class _CandlePainter extends CustomPainter {
+  final List<_Candle> candles;
+  final _Pick pick;
+  final _P p;
+  final bool profit;
+  _CandlePainter(this.candles, this.pick, this.p, this.profit);
+
+  static const double padL = 40, padR = 10, padT = 14, padB = 22;
+
+  void _text(Canvas c, String s, Offset o,
+      {Color? color, bool center = false}) {
+    final tp = TextPainter(
+      text: TextSpan(
+          text: s, style: TextStyle(fontSize: 9, color: color ?? p.muted)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(c, center ? Offset(o.dx - tp.width / 2, o.dy) : o);
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final tMin = candles.first.t.millisecondsSinceEpoch.toDouble();
+    final tMax = candles.last.t.millisecondsSinceEpoch.toDouble();
+    final tSpan = (tMax - tMin).clamp(1, double.infinity);
+    var lo = candles.map((e) => e.l).reduce((a, b) => a < b ? a : b);
+    var hi = candles.map((e) => e.h).reduce((a, b) => a > b ? a : b);
+    lo = lo < pick.entryPrice ? lo : pick.entryPrice;
+    hi = hi > pick.entryPrice ? hi : pick.entryPrice;
+    final pad = (hi - lo) * 0.08;
+    lo -= pad == 0 ? 1 : pad;
+    hi += pad == 0 ? 1 : pad;
+
+    final w = size.width - padL - padR, h = size.height - padT - padB;
+    double x(num t) => padL + ((t - tMin) / tSpan) * w;
+    double y(double v) => padT + h - ((v - lo) / (hi - lo)) * h;
+
+    // grid
+    final grid = Paint()
+      ..color = p.border
+      ..strokeWidth = 0.6;
+    for (final v in [hi, (hi + lo) / 2, lo]) {
+      canvas.drawLine(
+          Offset(padL, y(v)), Offset(size.width - padR, y(v)), grid);
+      _text(canvas, v.toStringAsFixed(1), Offset(3, y(v) - 5));
+    }
+
+    final entryX = x(pick.entryTime.millisecondsSinceEpoch);
+    final evalX = x(pick.evalTime.millisecondsSinceEpoch);
+    final l = entryX < evalX ? entryX : evalX,
+        r = entryX < evalX ? evalX : entryX;
+    canvas.drawRect(Rect.fromLTRB(l, padT, r, padT + h),
+        Paint()..color = (profit ? p.bull : p.bear).withOpacity(0.10));
+
+    // candles
+    final bw = ((w / candles.length) * 0.6).clamp(2.0, 9.0);
+    for (final k in candles) {
+      final cx = x(k.t.millisecondsSinceEpoch);
+      final col = k.c >= k.o ? p.bull : p.bear;
+      final paint = Paint()
+        ..color = col
+        ..strokeWidth = 1;
+      canvas.drawLine(Offset(cx, y(k.h)), Offset(cx, y(k.l)), paint);
+      final top = y(k.c > k.o ? k.c : k.o), bot = y(k.c > k.o ? k.o : k.c);
+      canvas.drawRect(
+          Rect.fromLTRB(
+              cx - bw / 2, top, cx + bw / 2, bot < top + 1 ? top + 1 : bot),
+          paint);
+    }
+
+    // entry / exit markers
+    final dash = Paint()
+      ..color = p.muted
+      ..strokeWidth = 1;
+    for (final xx in [entryX, evalX]) {
+      for (double yy = padT; yy < padT + h; yy += 6) {
+        canvas.drawLine(Offset(xx, yy), Offset(xx, yy + 3), dash);
+      }
+    }
+    canvas.drawCircle(
+        Offset(entryX, y(pick.entryPrice)), 4.5, Paint()..color = p.title);
+    canvas.drawCircle(Offset(evalX, y(pick.evalPrice)), 4.5,
+        Paint()..color = profit ? p.bull : p.bear);
+    _text(canvas, 'ENTRY', Offset(entryX + 4, padT + 2), color: p.sub);
+    _text(canvas, 'EXIT', Offset(evalX + 4, padT + 13), color: p.sub);
+
+    // time labels
+    for (final t in [
+      candles.first.t,
+      pick.entryTime,
+      pick.evalTime,
+      candles.last.t
+    ]) {
+      final cx = x(t.millisecondsSinceEpoch)
+          .clamp(padL + 14, size.width - padR - 14)
+          .toDouble();
+      _text(canvas, _time(t), Offset(cx, size.height - 14), center: true);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CandlePainter old) =>
+      old.candles != candles || old.pick != pick;
 }

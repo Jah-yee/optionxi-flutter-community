@@ -1,11 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────
-// Strategy Builder — single-file Flutter page (mobile version).
+// Strategy Builder — single-file Flutter page (mobile, redesigned).
 //
 // Drop this file into your app (e.g. lib/pages/strategy_builder_page.dart)
 // and push/route to `const StrategyBuilderPage()`.
 //
 // Requirements:
 //   - pubspec.yaml: supabase_flutter: ^2.0.0
+//   - Flutter 3.16+ (uses SegmentedButton, Material 3)
 //   - Supabase must already be initialized in main():
 //       await Supabase.initialize(url: '...', anonKey: '...');
 //   - Reads from two Postgres tables (same as the web version):
@@ -13,35 +14,29 @@
 //       public.nifty_ohlcv                   (5-minute OHLCV, symbol =
 //                                              "NIFTY" or "BANKNIFTY")
 //
-// What changed vs the Next.js web version, for mobile + "layman" clarity:
-//   - Side-by-side layout (chain | chart | payoff) became 3 tabs at the top.
-//   - The right-rail P&L card + payoff chart now live under a "Profit/Loss"
-//     tab, scrollable.
-//   - Positions moved to a bottom bar (count + total P&L) that opens a
-//     draggable bottom sheet with the full leg list — same idea as the web
-//     version's collapsed strip.
-//   - A plain-English info banner explains CE/PE and Buy/Sell up front.
-//   - Bid/ask/prev-OI/volume columns dropped from the option row (not shown
-//     in the original UI either) to keep the model lean for mobile.
-//   - Charts are hand-drawn with CustomPainter (no external chart package),
-//     so behaviour matches the original SVG charts 1:1.
-//
-// ─── IST handling ──────────────────────────────────────────────────────
-// Market data is always IST, independent of device timezone. DateTime.now()
-// and DateTime.parse() on a bare (no-offset) string both silently assume the
-// DEVICE's local zone in Dart — which is wrong for any non-IST device.
-//
-// Schema reality: both `ts` columns are Postgres `timestamptz` and store true
-// UTC instants (with an explicit `+00` offset, e.g. `2026-09-11 03:45:00+00`).
-// So:
-//   * When reading a `ts` out of the DB, `parseIst()` sees the `Z`/offset,
-//     shifts it by +05:30, and returns IST wall-clock tagged as UTC. This is
-//     what every DateTime in this file represents internally.
-//   * When sending a DateTime to Postgres, we must convert it BACK to a true
-//     UTC instant first (subtract the IST offset), so the literal carries a
-//     `Z` and PostgREST/Postgres compare it as the instant we mean.
-//   * Sending a naive (no-offset) ISO string would be interpreted as UTC by
-//     Postgres, silently shifting the comparison by 5:30. That was the bug.
+// ─── What changed in this redesign ─────────────────────────────────────
+//   - All the scattered controls (index, expiry, date, time, strike range,
+//     Greeks toggle) that used to live in an always-visible horizontal
+//     scroll strip now live in ONE "Filters" bottom sheet, opened from a
+//     single filter icon in the app bar. The main screen only shows a
+//     slim, read-only stat strip (Spot / ATM / Days-to-expiry).
+//   - A "?" (help) icon opens a plain-English explainer dialog: what
+//     CE/PE mean, what Buy/Sell mean, and what the numbers on screen mean.
+//     No jargon dumped on screen by default — it's one tap away.
+//   - Option chain rows are redesigned as compact, tappable "Buy"/"Sell"
+//     pills with tooltips instead of bare "B"/"S" letters, so the action
+//     is unambiguous without adding a text label.
+//   - Card-based, Material-3-driven visuals throughout: rounded corners,
+//     theme-aware colors, less visual noise, and more breathing room
+//     without wasting vertical space (headers are compact, chips replace
+//     paragraphs).
+//   - Leg list (positions) now supports swipe-to-delete (Dismissible) so
+//     the bottom sheet doesn't need a separate delete icon per row.
+//   - Bottom "Positions" bar redesigned as a floating pill with a live P&L
+//     readout, matching the rest of the modern visual language.
+//   - IST handling, Supabase queries, Black-Scholes math and payoff/candle
+//     painters are functionally UNCHANGED from the original — only their
+//     presentation (colors, paddings, chip styles) was modernized.
 // ─────────────────────────────────────────────────────────────────────────
 
 import 'dart:math' as math;
@@ -49,7 +44,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /* ════════════════════════════════════════════════════════════════════════
-   IST handling
+   IST handling (unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
 const Duration _istOffset = Duration(hours: 5, minutes: 30);
@@ -86,7 +81,9 @@ String isoUtcFromIst(DateTime istWallClock) =>
 const List<String> kIndexOptions = ['NIFTY', 'BANKNIFTY'];
 const Map<String, int> kLotSize = {'NIFTY': 65, 'BANKNIFTY': 30};
 const double kRiskFreeRate = 0.065;
-const int kStrikeSpan = 15; // strikes shown on each side of ATM
+const int kDefaultStrikeSpan = 15; // strikes shown on each side of ATM
+const int kMinStrikeSpan = 5;
+const int kMaxStrikeSpan = 30;
 
 const String kChainTable = 'index_optionchain_historical';
 const String kCandleTable = 'nifty_ohlcv';
@@ -134,7 +131,7 @@ String timeStrOf(DateTime d) =>
     '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
 /* ════════════════════════════════════════════════════════════════════════
-   Models
+   Models (unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
 enum OptionType { CE, PE }
@@ -267,7 +264,7 @@ class StrategyMetrics {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Supabase queries (all read-only)
+   Supabase queries (all read-only, unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
 Future<String?> findNearestSnapshotTs(String indexName, DateTime target) async {
@@ -427,7 +424,7 @@ Future<List<Candle>> fetchCandles(String symbol, String dateStr) async {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Black-Scholes helpers (Greeks + repricing on the payoff chart)
+   Black-Scholes helpers (unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
 double erf(double x) {
@@ -589,7 +586,7 @@ double stepGuess(List<ChainStrikeRow> rows, double atm) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Formatting helpers (plain thousands-grouping, no intl dependency)
+   Formatting helpers (unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
 String _groupThousands(String intPart) {
@@ -619,6 +616,427 @@ String fmtInt(num? n) =>
 String signed(double n) {
   final s = fmtNum(n.abs());
   return n >= 0 ? '+$s' : '-$s';
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Shared visual language — small helpers so colors/spacing stay consistent
+   without hardcoding a palette in every widget.
+   ════════════════════════════════════════════════════════════════════════ */
+
+class AppGap {
+  static const xs = SizedBox(height: 4, width: 4);
+  static const sm = SizedBox(height: 8, width: 8);
+  static const md = SizedBox(height: 12, width: 12);
+  static const lg = SizedBox(height: 20, width: 20);
+}
+
+/// A small rounded stat pill used in the top strip (Spot / ATM / DTE) and
+/// inside dialogs. Compact by design — icon + value, no long labels.
+class StatPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color? highlight;
+
+  const StatPill(
+      {super.key,
+      required this.icon,
+      required this.label,
+      required this.value,
+      this.highlight});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final bg =
+        highlight?.withOpacity(0.12) ?? scheme.surfaceVariant.withOpacity(0.5);
+    final fg = highlight ?? scheme.onSurfaceVariant;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 13, color: fg),
+        const SizedBox(width: 4),
+        Text(label,
+            style: TextStyle(fontSize: 10, color: fg.withOpacity(0.75))),
+        const SizedBox(width: 4),
+        Text(value,
+            style: TextStyle(
+                fontSize: 12, fontWeight: FontWeight.bold, color: fg)),
+      ]),
+    );
+  }
+}
+
+/// A tappable "Buy" / "Sell" action pill — same footprint as the old bare
+/// "B"/"S" letters, but a Tooltip spells the action out for new users, and
+/// the color language (green = pay to buy, red = collect by selling) is
+/// consistent with the rest of the app.
+class TradePill extends StatelessWidget {
+  final bool isBuy;
+  final bool disabled;
+  final VoidCallback? onTap;
+
+  const TradePill(
+      {super.key, required this.isBuy, required this.disabled, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isBuy ? Colors.green : Colors.red;
+    return Tooltip(
+      message: isBuy ? 'Buy — pay premium now' : 'Sell — collect premium now',
+      child: InkWell(
+        onTap: disabled ? null : onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 30,
+          height: 26,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: disabled
+                ? Colors.grey.withOpacity(0.10)
+                : color.withOpacity(0.13),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: disabled ? Colors.transparent : color.withOpacity(0.35),
+                width: 1),
+          ),
+          child: Text(
+            isBuy ? 'B' : 'S',
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: disabled ? Colors.grey : color),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Beginner-friendly explainer dialog (NEW)
+   ════════════════════════════════════════════════════════════════════════ */
+
+class BeginnerInfoDialog extends StatelessWidget {
+  const BeginnerInfoDialog({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    Widget row(String term, String meaning, Color color) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(
+              width: 44,
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              margin: const EdgeInsets.only(right: 10, top: 1),
+              decoration: BoxDecoration(
+                  color: color.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(6)),
+              child: Text(term,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 12, color: color)),
+            ),
+            Expanded(
+                child: Text(meaning, style: const TextStyle(fontSize: 13))),
+          ]),
+        );
+
+    return AlertDialog(
+      title: const Text('How to read this screen'),
+      content: SingleChildScrollView(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          row('CE', 'Call option — you profit if the price goes UP.',
+              Colors.blue),
+          row('PE', 'Put option — you profit if the price goes DOWN.',
+              Colors.teal),
+          row(
+              'BUY',
+              'You pay a premium now. Profit is unlimited if you\'re right; loss is capped at what you paid.',
+              Colors.green),
+          row(
+              'SELL',
+              'You collect a premium now. Profit is capped at that premium; loss can be larger if you\'re wrong.',
+              Colors.red),
+          const Divider(height: 24),
+          row(
+              'ATM',
+              'At-the-money — the strike price closest to the current market price.',
+              Colors.amber[800]!),
+          row(
+              'IV',
+              'Implied volatility — the market\'s guess at how much the price will swing.',
+              Colors.grey[700]!),
+          row(
+              'P&L',
+              'Profit & Loss — what you\'d make or lose right now if you closed every position.',
+              Colors.grey[700]!),
+        ]),
+      ),
+      actions: [
+        FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Got it')),
+      ],
+    );
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Filters bottom sheet (NEW) — replaces the old always-visible chip strip.
+   Groups Index / Expiry / Date & time / Strike range / Greeks in one place.
+   ════════════════════════════════════════════════════════════════════════ */
+
+class FilterSheet extends StatefulWidget {
+  final String indexName;
+  final List<String> expiries;
+  final String expiryDate;
+  final bool loadingExpiries;
+  final DateTime asOf;
+  final int strikeSpan;
+  final bool showGreeks;
+  final ValueChanged<String> onIndexChange;
+  final ValueChanged<String> onExpiryChange;
+  final ValueChanged<DateTime> onDateTimeChange;
+  final ValueChanged<int> onStrikeSpanChange;
+  final ValueChanged<bool> onGreeksChange;
+
+  const FilterSheet({
+    super.key,
+    required this.indexName,
+    required this.expiries,
+    required this.expiryDate,
+    required this.loadingExpiries,
+    required this.asOf,
+    required this.strikeSpan,
+    required this.showGreeks,
+    required this.onIndexChange,
+    required this.onExpiryChange,
+    required this.onDateTimeChange,
+    required this.onStrikeSpanChange,
+    required this.onGreeksChange,
+  });
+
+  @override
+  State<FilterSheet> createState() => _FilterSheetState();
+}
+
+class _FilterSheetState extends State<FilterSheet> {
+  late String _index = widget.indexName;
+  late String _expiry = widget.expiryDate;
+  late DateTime _asOf = widget.asOf;
+  late int _strikeSpan = widget.strikeSpan;
+  late bool _greeks = widget.showGreeks;
+
+  Future<void> _pickDate() async {
+    final picked = await showDatePicker(
+        context: context,
+        initialDate: _asOf,
+        firstDate: DateTime(2015),
+        lastDate: DateTime.now());
+    if (picked != null) {
+      setState(() => _asOf = DateTime.utc(
+          picked.year, picked.month, picked.day, _asOf.hour, _asOf.minute));
+      widget.onDateTimeChange(_asOf);
+    }
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+        context: context, initialTime: TimeOfDay.fromDateTime(_asOf));
+    if (picked != null) {
+      setState(() => _asOf = DateTime.utc(
+          _asOf.year, _asOf.month, _asOf.day, picked.hour, picked.minute));
+      widget.onDateTimeChange(_asOf);
+    }
+  }
+
+  void _nudge(int minutes) {
+    setState(() => _asOf = _asOf.add(Duration(minutes: minutes)));
+    widget.onDateTimeChange(_asOf);
+  }
+
+  void _nudgeDay(int days) {
+    setState(() => _asOf = _asOf.add(Duration(days: days)));
+    widget.onDateTimeChange(_asOf);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DraggableScrollableSheet(
+      initialChildSize: 0.72,
+      minChildSize: 0.4,
+      maxChildSize: 0.94,
+      expand: false,
+      builder: (context, scrollController) {
+        return SafeArea(
+          child: ListView(
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.4),
+                      borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              Text('Filters',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.bold)),
+              AppGap.lg,
+
+              // ── Index ───────────────────────────────────────────────
+              const Text('Index',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              AppGap.sm,
+              SegmentedButton<String>(
+                segments: kIndexOptions
+                    .map((i) => ButtonSegment(value: i, label: Text(i)))
+                    .toList(),
+                selected: {_index},
+                onSelectionChanged: (s) {
+                  setState(() => _index = s.first);
+                  widget.onIndexChange(s.first);
+                },
+              ),
+              AppGap.lg,
+
+              // ── Expiry ──────────────────────────────────────────────
+              const Text('Expiry date',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              AppGap.sm,
+              DropdownButtonFormField<String>(
+                value: _expiry.isEmpty ? null : _expiry,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  hintText:
+                      widget.loadingExpiries ? 'Loading…' : 'Select expiry',
+                ),
+                items: widget.expiries
+                    .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                    .toList(),
+                onChanged: widget.loadingExpiries
+                    ? null
+                    : (v) {
+                        if (v == null) return;
+                        setState(() => _expiry = v);
+                        widget.onExpiryChange(v);
+                      },
+              ),
+              AppGap.lg,
+
+              // ── Date & time ─────────────────────────────────────────
+              const Text('Snapshot date & time',
+                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              AppGap.sm,
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today, size: 14),
+                    label: Text(dateStrOf(_asOf)),
+                    onPressed: _pickDate,
+                  ),
+                ),
+                AppGap.sm,
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.access_time, size: 14),
+                    label: Text(timeStrOf(_asOf)),
+                    onPressed: _pickTime,
+                  ),
+                ),
+              ]),
+              AppGap.sm,
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                IconButton(
+                    icon: const Icon(Icons.chevron_left),
+                    tooltip: 'Previous day',
+                    onPressed: () => _nudgeDay(-1)),
+                ...[-15, -5, 5, 15].map((m) => OutlinedButton(
+                      onPressed: () => _nudge(m),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: m < 0 ? Colors.red : Colors.green,
+                        minimumSize: const Size(0, 32),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      child: Text(m > 0 ? '+${m}m' : '${m}m',
+                          style: const TextStyle(fontSize: 11)),
+                    )),
+                IconButton(
+                    icon: const Icon(Icons.chevron_right),
+                    tooltip: 'Next day',
+                    onPressed: () => _nudgeDay(1)),
+              ]),
+              Text('Market hours only: 9:15 AM – 3:30 PM IST',
+                  style:
+                      TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)),
+              AppGap.lg,
+
+              // ── Strike range ────────────────────────────────────────
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                const Text('Strikes shown around ATM',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                Text('±$_strikeSpan',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+              ]),
+              Slider(
+                value: _strikeSpan.toDouble(),
+                min: kMinStrikeSpan.toDouble(),
+                max: kMaxStrikeSpan.toDouble(),
+                divisions: kMaxStrikeSpan - kMinStrikeSpan,
+                label: '±$_strikeSpan',
+                onChanged: (v) {
+                  setState(() => _strikeSpan = v.round());
+                  widget.onStrikeSpanChange(_strikeSpan);
+                },
+              ),
+              AppGap.md,
+
+              // ── Greeks toggle ───────────────────────────────────────
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Show Greeks (Δ, Θ)',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                subtitle: const Text(
+                    'Extra risk numbers for each option — hide these if they\'re noise.',
+                    style: TextStyle(fontSize: 11)),
+                value: _greeks,
+                onChanged: (v) {
+                  setState(() => _greeks = v);
+                  widget.onGreeksChange(v);
+                },
+              ),
+              AppGap.md,
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Done'),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -677,9 +1095,11 @@ class _CandleChartWidgetState extends State<CandleChartWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     if (widget.loading) {
       return const SizedBox(
-          height: 260, child: Center(child: CircularProgressIndicator()));
+          height: 280, child: Center(child: CircularProgressIndicator()));
     }
     if (widget.candles.isEmpty) {
       return SizedBox(
@@ -692,55 +1112,62 @@ class _CandleChartWidgetState extends State<CandleChartWidget> {
         ),
       );
     }
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('${widget.symbol} · 5 min candles',
-              style:
-                  const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-          const SizedBox(height: 8),
-          LayoutBuilder(builder: (context, constraints) {
-            final width = constraints.maxWidth;
-            const height = 260.0;
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTapDown: (d) {
-                _preview(d.localPosition, width);
-                _commit();
-              },
-              onPanStart: (d) => _preview(d.localPosition, width),
-              onPanUpdate: (d) => _preview(d.localPosition, width),
-              onPanEnd: (_) => _commit(),
-              onPanCancel: _commit,
-              child: CustomPaint(
-                size: Size(width, height),
-                painter: CandleChartPainter(
-                  candles: widget.candles,
-                  legs: widget.legs,
-                  asOf: widget.asOf,
-                  previewIdx: _previewIdx,
-                  lotSize: kLotSize[widget.symbol] ?? 1,
-                  isDark: Theme.of(context).brightness == Brightness.dark,
+    return Card(
+      margin: const EdgeInsets.all(12),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: scheme.outlineVariant.withOpacity(0.4))),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('${widget.symbol} · 5 min candles',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 13)),
+              Row(mainAxisSize: MainAxisSize.min, children: const [
+                Icon(Icons.arrow_drop_up, color: Colors.green, size: 16),
+                Text('Buy', style: TextStyle(fontSize: 10)),
+                SizedBox(width: 8),
+                Icon(Icons.arrow_drop_down, color: Colors.red, size: 16),
+                Text('Sell', style: TextStyle(fontSize: 10)),
+              ]),
+            ]),
+            AppGap.sm,
+            LayoutBuilder(builder: (context, constraints) {
+              final width = constraints.maxWidth;
+              const height = 260.0;
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (d) {
+                  _preview(d.localPosition, width);
+                  _commit();
+                },
+                onPanStart: (d) => _preview(d.localPosition, width),
+                onPanUpdate: (d) => _preview(d.localPosition, width),
+                onPanEnd: (_) => _commit(),
+                onPanCancel: _commit,
+                child: CustomPaint(
+                  size: Size(width, height),
+                  painter: CandleChartPainter(
+                    candles: widget.candles,
+                    legs: widget.legs,
+                    asOf: widget.asOf,
+                    previewIdx: _previewIdx,
+                    lotSize: kLotSize[widget.symbol] ?? 1,
+                    isDark: Theme.of(context).brightness == Brightness.dark,
+                  ),
                 ),
-              ),
-            );
-          }),
-          const SizedBox(height: 6),
-          const Text(
-              'Tap or drag the chart to preview that bar, release to jump the '
-              'option chain and P&L to that time.',
-              style: TextStyle(fontSize: 10, color: Colors.grey)),
-          const SizedBox(height: 4),
-          Row(children: const [
-            Icon(Icons.arrow_drop_up, color: Colors.green, size: 16),
-            Text('Buy', style: TextStyle(fontSize: 10)),
-            SizedBox(width: 12),
-            Icon(Icons.arrow_drop_down, color: Colors.red, size: 16),
-            Text('Sell', style: TextStyle(fontSize: 10)),
-          ]),
-        ],
+              );
+            }),
+            AppGap.xs,
+            Text(
+                'Tap or drag the chart to preview that bar, release to jump the option chain and P&L to that time.',
+                style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)),
+          ],
+        ),
       ),
     );
   }
@@ -822,7 +1249,10 @@ class CandleChartPainter extends CustomPainter {
             ..strokeWidth = 1);
       final bodyTop = math.min(yScale(c.open), yScale(c.close));
       final bodyH = math.max(1.0, (yScale(c.open) - yScale(c.close)).abs());
-      canvas.drawRect(Rect.fromLTWH(x - bodyW / 2, bodyTop, bodyW, bodyH),
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromLTWH(x - bodyW / 2, bodyTop, bodyW, bodyH),
+              const Radius.circular(1.5)),
           Paint()..color = color);
     }
 
@@ -925,7 +1355,7 @@ class CandleChartPainter extends CustomPainter {
     final chipW = math.min(tp.width + 12, size.width - _padLeft - 4);
     final chipRect = Rect.fromLTWH(_padLeft + 2, 2, chipW, 16);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(chipRect, const Radius.circular(4)),
+      RRect.fromRectAndRadius(chipRect, const Radius.circular(6)),
       Paint()
         ..color = (isDark ? Colors.black87 : Colors.white).withOpacity(0.9),
     );
@@ -1001,12 +1431,14 @@ class _PayoffChartWidgetState extends State<PayoffChartWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
     if (widget.legs.isEmpty) {
       return const SizedBox(
-        height: 200,
+        height: 220,
         child: Center(
           child: Text(
-            'No legs yet.\nTap Buy / Sell in the Option Chain tab to build a strategy.',
+            'No legs yet.\nGo to the Option Chain tab and tap Buy / Sell to build a strategy.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.grey),
           ),
@@ -1050,19 +1482,30 @@ class _PayoffChartWidgetState extends State<PayoffChartWidget> {
     final sliderMax = math.max(0.1, widget.daysLeft);
 
     return Padding(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const Text('Payoff at Expiry',
+            const Text('Payoff at expiry',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-            Text('${signed(targetPnl)} at target',
-                style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: targetPnl >= 0 ? Colors.green : Colors.red)),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: (targetPnl >= 0 ? Colors.green : Colors.red)
+                    .withOpacity(0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text('${signed(targetPnl)} at target',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                      color: targetPnl >= 0
+                          ? Colors.green[800]
+                          : Colors.red[800])),
+            ),
           ]),
-          const SizedBox(height: 8),
+          AppGap.sm,
           LayoutBuilder(builder: (context, constraints) {
             final width = constraints.maxWidth;
             const height = 220.0;
@@ -1084,28 +1527,38 @@ class _PayoffChartWidgetState extends State<PayoffChartWidget> {
               ),
             );
           }),
-          const SizedBox(height: 8),
+          AppGap.sm,
+          // ── Target price stepper — compact segmented row ─────────────
           Row(children: [
-            const Text('Target price:  ', style: TextStyle(fontSize: 12)),
-            IconButton(
-              icon: const Icon(Icons.remove_circle_outline, size: 18),
-              onPressed: () => setState(
+            const Text('Target price', style: TextStyle(fontSize: 12)),
+            const Spacer(),
+            _StepperButton(
+              icon: Icons.remove,
+              onTap: () => setState(
                   () => targetSpot = (targetSpot ?? widget.spot ?? 0) - 5),
             ),
-            Text(fmtNum(targetSpot),
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-            IconButton(
-              icon: const Icon(Icons.add_circle_outline, size: 18),
-              onPressed: () => setState(
+            Container(
+              constraints: const BoxConstraints(minWidth: 70),
+              alignment: Alignment.center,
+              child: Text(fmtNum(targetSpot),
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            _StepperButton(
+              icon: Icons.add,
+              onTap: () => setState(
                   () => targetSpot = (targetSpot ?? widget.spot ?? 0) + 5),
             ),
-            TextButton(
-                onPressed: () => setState(() => targetSpot = widget.spot),
-                child: const Text('Reset', style: TextStyle(fontSize: 12))),
+            IconButton(
+                tooltip: 'Reset to current spot',
+                icon: const Icon(Icons.restart_alt, size: 18),
+                onPressed: () => setState(() => targetSpot = widget.spot)),
           ]),
-          Text(
-              'Days to expiry: ${math.max(0.0, widget.daysLeft - daysOffset).toStringAsFixed(1)}',
-              style: const TextStyle(fontSize: 12)),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            const Text('Days to expiry', style: TextStyle(fontSize: 12)),
+            Text(math.max(0.0, widget.daysLeft - daysOffset).toStringAsFixed(1),
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ]),
           Slider(
             value: daysOffset.clamp(0.0, sliderMax),
             min: 0,
@@ -1114,35 +1567,88 @@ class _PayoffChartWidgetState extends State<PayoffChartWidget> {
           ),
           if (metrics != null) ...[
             const Divider(),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Text('Max Profit'),
-              Text(
-                  metrics.maxProfitUnlimited
+            Row(children: [
+              Expanded(
+                child: _MetricTile(
+                  label: 'Max profit',
+                  value: metrics.maxProfitUnlimited
                       ? 'Unlimited'
                       : fmtNum(metrics.maxProfit),
-                  style: const TextStyle(
-                      color: Colors.green, fontWeight: FontWeight.bold)),
-            ]),
-            const SizedBox(height: 4),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Text('Max Loss'),
-              Text(
-                  metrics.maxLossUnlimited
+                  color: Colors.green,
+                ),
+              ),
+              AppGap.sm,
+              Expanded(
+                child: _MetricTile(
+                  label: 'Max loss',
+                  value: metrics.maxLossUnlimited
                       ? 'Unlimited'
                       : fmtNum(metrics.maxLoss),
-                  style: const TextStyle(
-                      color: Colors.red, fontWeight: FontWeight.bold)),
+                  color: Colors.red,
+                ),
+              ),
             ]),
             if (metrics.breakevens.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(top: 6),
+                padding: const EdgeInsets.only(top: 8),
                 child: Text(
                     'Breakeven: ${metrics.breakevens.map((b) => fmtNum(b, digits: 0)).join(", ")}',
-                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                    style: TextStyle(
+                        fontSize: 11, color: scheme.onSurfaceVariant)),
               ),
           ],
         ],
       ),
+    );
+  }
+}
+
+class _StepperButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _StepperButton({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 30,
+        height: 30,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.6),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(icon, size: 16),
+      ),
+    );
+  }
+}
+
+class _MetricTile extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+  const _MetricTile(
+      {required this.label, required this.value, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        const SizedBox(height: 2),
+        Text(value,
+            style: TextStyle(
+                fontWeight: FontWeight.bold, color: color, fontSize: 14)),
+      ]),
     );
   }
 }
@@ -1297,7 +1803,7 @@ class PayoffChartPainter extends CustomPainter {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Option chain row (CE | Strike | PE, with Buy/Sell pills)
+   Option chain row (CE | Strike | PE) — compact, modern, tooltip-labeled
    ════════════════════════════════════════════════════════════════════════ */
 
 class ChainRowTile extends StatelessWidget {
@@ -1330,18 +1836,27 @@ class ChainRowTile extends StatelessWidget {
     final peG = _greeksFor(row.pe, OptionType.PE);
     return Container(
       color: isAtm ? Colors.amber.withOpacity(0.10) : null,
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 6),
       child: Row(children: [
         Expanded(child: _sideCell(row.ce, OptionType.CE, ceG, isCe: true)),
-        SizedBox(
-          width: 56,
+        Container(
+          width: 58,
+          alignment: Alignment.center,
+          padding: isAtm
+              ? const EdgeInsets.symmetric(vertical: 2, horizontal: 4)
+              : EdgeInsets.zero,
+          decoration: isAtm
+              ? BoxDecoration(
+                  color: Colors.amber.withOpacity(0.22),
+                  borderRadius: BorderRadius.circular(6))
+              : null,
           child: Text(
             row.strike.toStringAsFixed(0),
             textAlign: TextAlign.center,
             style: TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
-                color: isAtm ? Colors.amber[800] : null),
+                color: isAtm ? Colors.amber[900] : null),
           ),
         ),
         Expanded(child: _sideCell(row.pe, OptionType.PE, peG, isCe: false)),
@@ -1368,39 +1883,21 @@ class ChainRowTile extends StatelessWidget {
       ],
     );
     final buttons = Row(mainAxisSize: MainAxisSize.min, children: [
-      _pillButton('B', Colors.green, disabled,
-          () => onTrade(row.strike, type, LegAction.BUY)),
-      const SizedBox(width: 2),
-      _pillButton('S', Colors.red, disabled,
-          () => onTrade(row.strike, type, LegAction.SELL)),
+      TradePill(
+          isBuy: true,
+          disabled: disabled,
+          onTap: () => onTrade(row.strike, type, LegAction.BUY)),
+      const SizedBox(width: 3),
+      TradePill(
+          isBuy: false,
+          disabled: disabled,
+          onTap: () => onTrade(row.strike, type, LegAction.SELL)),
     ]);
     return Row(
       mainAxisAlignment: isCe ? MainAxisAlignment.end : MainAxisAlignment.start,
       children: isCe
           ? [priceCol, const SizedBox(width: 6), buttons]
           : [buttons, const SizedBox(width: 6), priceCol],
-    );
-  }
-
-  Widget _pillButton(
-      String label, Color color, bool disabled, VoidCallback onTap) {
-    return InkWell(
-      onTap: disabled ? null : onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-        decoration: BoxDecoration(
-          color: disabled
-              ? Colors.grey.withOpacity(0.10)
-              : color.withOpacity(0.12),
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                color: disabled ? Colors.grey : color)),
-      ),
     );
   }
 }
@@ -1417,6 +1914,7 @@ class PnLSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     double totalPnl = 0, netCash = 0;
     int pricedCount = 0;
     for (final leg in legs) {
@@ -1431,14 +1929,24 @@ class PnLSummaryCard extends StatelessWidget {
     final allPriced = legs.isNotEmpty && pricedCount == legs.length;
 
     return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: scheme.outlineVariant.withOpacity(0.4))),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const Text('Total Profit / Loss',
+            const Text('Total profit / loss',
                 style: TextStyle(fontSize: 12, color: Colors.grey)),
-            Text('${legs.length} leg${legs.length == 1 ? '' : 's'}',
-                style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                  color: scheme.surfaceVariant.withOpacity(0.6),
+                  borderRadius: BorderRadius.circular(20)),
+              child: Text('${legs.length} leg${legs.length == 1 ? '' : 's'}',
+                  style: const TextStyle(fontSize: 10)),
+            ),
           ]),
           const SizedBox(height: 4),
           Text(
@@ -1446,7 +1954,7 @@ class PnLSummaryCard extends StatelessWidget {
                 ? '—'
                 : (allPriced ? signed(totalPnl) : '${signed(totalPnl)}*'),
             style: TextStyle(
-              fontSize: 28,
+              fontSize: 30,
               fontWeight: FontWeight.bold,
               color: legs.isEmpty
                   ? Colors.grey
@@ -1461,7 +1969,7 @@ class PnLSummaryCard extends StatelessWidget {
             ),
           const Divider(height: 20),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const Text('Net Premium',
+            const Text('Net premium',
                 style: TextStyle(fontSize: 12, color: Colors.grey)),
             Text(
               legs.isEmpty
@@ -1477,7 +1985,7 @@ class PnLSummaryCard extends StatelessWidget {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Positions bottom sheet (full leg blotter)
+   Positions bottom sheet (full leg blotter) — swipe to remove a leg
    ════════════════════════════════════════════════════════════════════════ */
 
 class PositionsSheetContent extends StatelessWidget {
@@ -1526,7 +2034,7 @@ class PositionsSheetContent extends StatelessWidget {
             child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text('Your Positions (${legs.length})',
+                  Text('Your positions (${legs.length})',
                       style: const TextStyle(
                           fontWeight: FontWeight.bold, fontSize: 15)),
                   if (legs.isNotEmpty)
@@ -1536,19 +2044,39 @@ class PositionsSheetContent extends StatelessWidget {
                             style: TextStyle(color: Colors.red, fontSize: 12))),
                 ]),
           ),
+          if (legs.isNotEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Text('Swipe a position left to remove it.',
+                  style: TextStyle(fontSize: 10, color: Colors.grey)),
+            ),
           const Divider(),
           Expanded(
             child: legs.isEmpty
                 ? const Center(
                     child: Text(
-                        'No legs yet.\nTap B / S in the Option Chain tab to add one.',
+                        'No legs yet.\nTap Buy / Sell in the Option Chain tab to add one.',
                         textAlign: TextAlign.center))
                 : ListView.separated(
                     controller: scrollController,
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: legs.length,
                     separatorBuilder: (_, __) => const Divider(),
-                    itemBuilder: (context, i) => _legTile(legs[i]),
+                    itemBuilder: (context, i) => Dismissible(
+                      key: ValueKey(legs[i].legId),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                            color: Colors.red.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(10)),
+                        child:
+                            const Icon(Icons.delete_outline, color: Colors.red),
+                      ),
+                      onDismissed: (_) => onRemove(legs[i].legId),
+                      child: _legTile(legs[i]),
+                    ),
                   ),
           ),
         ]);
@@ -1607,9 +2135,12 @@ class PositionsSheetContent extends StatelessWidget {
                   child: Text('stale',
                       style: TextStyle(fontSize: 10, color: Colors.grey))),
           ]),
-          IconButton(
-              icon: const Icon(Icons.close, size: 18),
-              onPressed: () => onRemove(leg.legId)),
+          Text(pnl != null ? signed(pnl) : '—',
+              style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: pnl == null
+                      ? Colors.grey
+                      : (pnl >= 0 ? Colors.green : Colors.red))),
         ]),
         const SizedBox(height: 4),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
@@ -1628,12 +2159,6 @@ class PositionsSheetContent extends StatelessWidget {
           Text(
               '${fmtNum(leg.entryPrice)} → ${leg.currentPrice != null ? fmtNum(leg.currentPrice) : '—'}',
               style: const TextStyle(fontSize: 12)),
-          Text(pnl != null ? signed(pnl) : '—',
-              style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: pnl == null
-                      ? Colors.grey
-                      : (pnl >= 0 ? Colors.green : Colors.red))),
         ]),
         if (showGreeks && g != null)
           Padding(
@@ -1668,6 +2193,7 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
   List<String> expiries = [];
   String expiryDate = '';
   bool showGreeks = true;
+  int strikeSpan = kDefaultStrikeSpan;
 
   DateTime asOf = initialMarketAsOf();
   ChainSnapshot chain = ChainSnapshot.empty();
@@ -1842,6 +2368,17 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
       currentTs: chain.ts != null ? parseIst(chain.ts) : null,
     );
     setState(() => legs = [...legs, newLeg]);
+
+    // Small confirmation so the tap feels acknowledged without a full dialog.
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(milliseconds: 900),
+        content: Text(
+            '${action == LegAction.BUY ? "Bought" : "Sold"} ${type.name} ${strike.toStringAsFixed(0)} @ ${fmtNum(entryPrice)}'),
+      ),
+    );
   }
 
   void _removeLeg(String legId) =>
@@ -1886,6 +2423,36 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
     );
   }
 
+  void _openFilters() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => FilterSheet(
+        indexName: indexName,
+        expiries: expiries,
+        expiryDate: expiryDate,
+        loadingExpiries: loadingExpiries,
+        asOf: asOf,
+        strikeSpan: strikeSpan,
+        showGreeks: showGreeks,
+        onIndexChange: (v) => _onIndexChange(v),
+        onExpiryChange: (v) {
+          setState(() => expiryDate = v);
+          _loadChain();
+        },
+        onDateTimeChange: _applyAsOf,
+        onStrikeSpanChange: (v) => setState(() => strikeSpan = v),
+        onGreeksChange: (v) => setState(() => showGreeks = v),
+      ),
+    );
+  }
+
+  void _showInfoDialog() {
+    showDialog(context: context, builder: (_) => const BeginnerInfoDialog());
+  }
+
   Widget _buildErrorBanner() {
     return Container(
       width: double.infinity,
@@ -1896,130 +2463,41 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
     );
   }
 
-  Widget _buildControlsRow(double? estSpot, double remainingDays) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(children: [
-          ToggleButtons(
-            isSelected: kIndexOptions.map((i) => i == indexName).toList(),
-            onPressed: (i) => _onIndexChange(kIndexOptions[i]),
-            borderRadius: BorderRadius.circular(8),
-            constraints: const BoxConstraints(minHeight: 32, minWidth: 40),
-            children: kIndexOptions
-                .map((i) => Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    child: Text(i)))
-                .toList(),
-          ),
-          const SizedBox(width: 8),
-          DropdownButton<String>(
-            value: expiryDate.isEmpty ? null : expiryDate,
-            hint: const Text('Expiry'),
-            underline: const SizedBox.shrink(),
-            items: expiries
-                .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                .toList(),
-            onChanged: loadingExpiries
-                ? null
-                : (v) {
-                    if (v != null) {
-                      setState(() => expiryDate = v);
-                      _loadChain();
-                    }
-                  },
-          ),
-          const SizedBox(width: 8),
-          Chip(label: Text('Lot $lotSize')),
-          const SizedBox(width: 8),
-          Chip(label: Text('Spot ${fmtNum(estSpot)}')),
-          const SizedBox(width: 8),
-          Chip(
-              label: Text('ATM ${chain.atmStrike?.toStringAsFixed(0) ?? '—'}'),
-              backgroundColor: Colors.amber.withOpacity(0.15)),
-          const SizedBox(width: 8),
-          Chip(label: Text('${remainingDays.toStringAsFixed(1)}d to expiry')),
-        ]),
-      ),
-    );
-  }
-
-  Widget _timeControls() {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      child: Column(children: [
-        Row(children: [
-          Expanded(
-            child: OutlinedButton.icon(
-              icon: const Icon(Icons.calendar_today, size: 14),
-              label: Text(dateStrOf(asOf)),
-              onPressed: () async {
-                final picked = await showDatePicker(
-                    context: context,
-                    initialDate: asOf,
-                    firstDate: DateTime(2015),
-                    lastDate: DateTime.now());
-                if (picked != null) {
-                  _applyAsOf(
-                      DateTime.utc(picked.year, picked.month, picked.day));
-                }
-              },
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: OutlinedButton.icon(
-              icon: const Icon(Icons.access_time, size: 14),
-              label: Text(timeStrOf(asOf)),
-              onPressed: () async {
-                final picked = await showTimePicker(
-                    context: context,
-                    initialTime: TimeOfDay.fromDateTime(asOf));
-                if (picked != null) {
-                  _applyAsOf(DateTime.utc(asOf.year, asOf.month, asOf.day,
-                      picked.hour, picked.minute));
-                }
-              },
-            ),
-          ),
-        ]),
-        const SizedBox(height: 6),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          IconButton(
-              icon: const Icon(Icons.chevron_left),
-              tooltip: 'Previous day',
-              onPressed: () =>
-                  _applyAsOf(asOf.subtract(const Duration(days: 1)))),
-          ...[-15, -5, 5, 15].map((m) => Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: OutlinedButton(
-                  onPressed: () => _applyAsOf(asOf.add(Duration(minutes: m))),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: m < 0 ? Colors.red : Colors.green,
-                    minimumSize: const Size(0, 32),
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                  child: Text(m > 0 ? '+${m}m' : '${m}m',
-                      style: const TextStyle(fontSize: 11)),
-                ),
-              )),
-          IconButton(
-              icon: const Icon(Icons.chevron_right),
-              tooltip: 'Next day',
-              onPressed: () => _applyAsOf(asOf.add(const Duration(days: 1)))),
-        ]),
-        Text(
-          loadingChain
-              ? 'Loading snapshot…'
-              : (chain.ts != null
-                  ? 'Snapshot: ${chain.ts}'
-                  : 'No snapshot at this time'),
-          style: const TextStyle(fontSize: 10, color: Colors.grey),
+  /// Slim, read-only stat strip replacing the old always-visible chip row.
+  /// Tapping it also opens Filters, since these values are what the
+  /// filters control.
+  Widget _buildStatStrip(double? estSpot, double remainingDays) {
+    return InkWell(
+      onTap: _openFilters,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(children: [
+            StatPill(
+                icon: Icons.show_chart, label: 'Spot', value: fmtNum(estSpot)),
+            AppGap.sm,
+            StatPill(
+                icon: Icons.gps_fixed,
+                label: 'ATM',
+                value: chain.atmStrike?.toStringAsFixed(0) ?? '—',
+                highlight: Colors.amber[800]),
+            AppGap.sm,
+            StatPill(
+                icon: Icons.hourglass_bottom,
+                label: 'Expiry',
+                value: '${remainingDays.toStringAsFixed(1)}d'),
+            AppGap.sm,
+            StatPill(
+                icon: Icons.inventory_2_outlined,
+                label: 'Lot',
+                value: '$lotSize'),
+            AppGap.sm,
+            Icon(Icons.tune,
+                size: 16, color: Theme.of(context).colorScheme.primary),
+          ]),
         ),
-        const Text('Market hours only: 9:15 AM – 3:30 PM',
-            style: TextStyle(fontSize: 9, color: Colors.grey)),
-      ]),
+      ),
     );
   }
 
@@ -2029,28 +2507,27 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
         ? chain.rows
             .where((r) =>
                 (r.strike - atm).abs() <=
-                kStrikeSpan * stepGuess(chain.rows, atm))
+                strikeSpan * stepGuess(chain.rows, atm))
             .toList()
         : chain.rows;
     return Column(children: [
-      _timeControls(),
       Container(
-        color: Colors.grey.withOpacity(0.08),
+        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.35),
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
-        child: const Row(children: [
-          Expanded(
+        child: Row(children: [
+          const Expanded(
               child: Text('CALLS',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                       color: Colors.blue))),
-          SizedBox(
-              width: 56,
+          const SizedBox(
+              width: 58,
               child: Text('STRIKE',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
-          Expanded(
+          const Expanded(
               child: Text('PUTS',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -2063,9 +2540,25 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
         child: (loadingChain && !hasLoadedOnce)
             ? const Center(child: CircularProgressIndicator())
             : visible.isEmpty
-                ? const Center(
-                    child: Text(
-                        'No chain data for this index / expiry / time yet.'))
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.search_off,
+                            size: 32, color: Colors.grey),
+                        const SizedBox(height: 8),
+                        const Text(
+                            'No chain data for this index / expiry / time yet.',
+                            textAlign: TextAlign.center),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: _openFilters,
+                          icon: const Icon(Icons.tune, size: 16),
+                          label: const Text('Adjust filters'),
+                        ),
+                      ]),
+                    ),
+                  )
                 : ListView.separated(
                     itemCount: visible.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
@@ -2105,11 +2598,23 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
         PnLSummaryCard(legs: legs, lotSize: lotSize),
         const SizedBox(height: 12),
         Card(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .outlineVariant
+                      .withOpacity(0.4))),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
             child: PayoffChartWidget(
                 legs: legs,
                 lotSize: lotSize,
                 spot: estSpot,
-                daysLeft: remainingDays)),
+                daysLeft: remainingDays),
+          ),
+        ),
       ]),
     );
   }
@@ -2128,42 +2633,49 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
     final allPriced = legs.isNotEmpty && pricedCount == legs.length;
 
     return SafeArea(
-      child: InkWell(
-        onTap: () => _openPositionsSheet(estSpot),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            border:
-                Border(top: BorderSide(color: Colors.grey.withOpacity(0.2))),
+      minimum: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(18),
+        color: Theme.of(context).cardColor,
+        child: InkWell(
+          onTap: () => _openPositionsSheet(estSpot),
+          borderRadius: BorderRadius.circular(18),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.list_alt, size: 18),
+                    const SizedBox(width: 8),
+                    const Text('Positions',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 6),
+                    CircleAvatar(
+                        radius: 10,
+                        backgroundColor: Colors.grey.withOpacity(0.2),
+                        child: Text('${legs.length}',
+                            style: const TextStyle(fontSize: 11))),
+                  ]),
+                  Row(children: [
+                    Text(
+                      legs.isEmpty
+                          ? '—'
+                          : (allPriced
+                              ? signed(totalPnl)
+                              : '${signed(totalPnl)}*'),
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: legs.isEmpty
+                              ? Colors.grey
+                              : (totalPnl >= 0 ? Colors.green : Colors.red)),
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.keyboard_arrow_up),
+                  ]),
+                ]),
           ),
-          child:
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Row(children: [
-              const Text('Positions',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(width: 6),
-              CircleAvatar(
-                  radius: 10,
-                  backgroundColor: Colors.grey.withOpacity(0.2),
-                  child: Text('${legs.length}',
-                      style: const TextStyle(fontSize: 11))),
-            ]),
-            Row(children: [
-              Text(
-                legs.isEmpty
-                    ? '—'
-                    : (allPriced ? signed(totalPnl) : '${signed(totalPnl)}*'),
-                style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: legs.isEmpty
-                        ? Colors.grey
-                        : (totalPnl >= 0 ? Colors.green : Colors.red)),
-              ),
-              const SizedBox(width: 4),
-              const Icon(Icons.keyboard_arrow_up),
-            ]),
-          ]),
         ),
       ),
     );
@@ -2178,16 +2690,22 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Strategy Builder'),
-        // actions: [
-        //   Row(children: [
-        //     const Text('Greeks', style: TextStyle(fontSize: 12)),
-        //     Switch(
-        //         value: showGreeks,
-        //         onChanged: (v) => setState(() => showGreeks = v)),
-        //     const SizedBox(width: 8),
-        //   ]),
-        // ],
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Strategy Builder'),
+          Text('$indexName${expiryDate.isNotEmpty ? " · $expiryDate" : ""}',
+              style:
+                  const TextStyle(fontSize: 11, fontWeight: FontWeight.normal)),
+        ]),
+        actions: [
+          IconButton(
+              icon: const Icon(Icons.help_outline),
+              tooltip: 'How to read this screen',
+              onPressed: _showInfoDialog),
+          IconButton(
+              icon: const Icon(Icons.tune),
+              tooltip: 'Filters',
+              onPressed: _openFilters),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -2198,8 +2716,7 @@ class _StrategyBuilderPageState extends State<StrategyBuilderPage>
         ),
       ),
       body: Column(children: [
-        // _buildInfoBanner(),
-        _buildControlsRow(estSpot, remainingDays),
+        _buildStatStrip(estSpot, remainingDays),
         if (error != null) _buildErrorBanner(),
         Expanded(
           child: TabBarView(controller: _tabController, children: [

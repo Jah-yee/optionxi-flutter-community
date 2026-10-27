@@ -536,10 +536,20 @@ class _MyAlertsPageState extends State<MyAlertsPage> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: p.surface,
+      backgroundColor: Colors.transparent,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _GuideSheet(p: p),
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.75,
+        minChildSize: 0.4,
+        maxChildSize: 0.92,
+        expand: false,
+        snap: true,
+        snapSizes: const [0.4, 0.75, 0.92],
+        builder: (context, scrollController) {
+          return _GuideSheet(p: p, scrollController: scrollController);
+        },
+      ),
     );
   }
 
@@ -1346,10 +1356,12 @@ class _ConditionList extends StatelessWidget {
 
 // ─────────────────────────────────────────────
 //  Guide bottom sheet (plain-language help)
+//  Now supports dragging down to dismiss
 // ─────────────────────────────────────────────
 class _GuideSheet extends StatelessWidget {
-  const _GuideSheet({required this.p});
+  const _GuideSheet({required this.p, required this.scrollController});
   final _P p;
+  final ScrollController scrollController;
 
   Widget _title(String t) => Padding(
         padding: const EdgeInsets.only(top: 24, bottom: 8),
@@ -1417,53 +1429,66 @@ class _GuideSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints:
-          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
-      child: SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                    color: p.line, borderRadius: BorderRadius.circular(2)),
+    return Container(
+      decoration: BoxDecoration(
+        color: p.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: NotificationListener<ScrollNotification>(
+        onNotification: (notification) {
+          // Detect a strong scroll-down gesture (overscroll at the top)
+          if (notification is OverscrollNotification &&
+              notification.overscroll < -8) {
+            Navigator.of(context).pop();
+          }
+          return false;
+        },
+        child: SafeArea(
+          child: ListView(
+            controller: scrollController,
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: p.line, borderRadius: BorderRadius.circular(2)),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Text('How alerts work',
-                style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                    color: p.ink,
-                    letterSpacing: -0.6)),
-            const SizedBox(height: 8),
-            Text(
-                "An alert watches a stock for you. When the condition you chose happens, we send a notification, so you don't have to keep checking the screen.",
-                style: TextStyle(fontSize: 14, color: p.muted, height: 1.5)),
-            _title('Kinds of alerts'),
-            for (final t in _typeOrder)
-              _row(_typeIcon(t), _dirColor(_dirOf(t), p), _typeName[t]!,
-                  _typeGuide[t]!),
-            _title('What the status means'),
-            for (final s in _Status.values)
-              _row(s.icon, s.color(p), s.label, s.meaning),
-            _title('Words you may see'),
-            _term2('Target price',
-                'The price you pick. When the stock reaches it, we notify you.'),
-            _term2('Breakout',
-                'When a price pushes past a level it has struggled to cross before. Traders often see it as the start of a bigger move.'),
-            _term2("Today's high / low",
-                'The highest and lowest prices the stock has traded at so far today.'),
-            _term2('52-week high / low',
-                'The highest and lowest prices the stock has traded at in the past year.'),
-            const SizedBox(height: 12),
-            Text('Alerts are notifications, not advice to buy or sell.',
-                style: TextStyle(fontSize: 12, color: p.muted)),
-          ],
+              const SizedBox(height: 16),
+              Text('How alerts work',
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      color: p.ink,
+                      letterSpacing: -0.6)),
+              const SizedBox(height: 8),
+              Text(
+                  "An alert watches a stock for you. When the condition you chose happens, we send a notification, so you don't have to keep checking the screen.",
+                  style: TextStyle(fontSize: 14, color: p.muted, height: 1.5)),
+              _title('Kinds of alerts'),
+              for (final t in _typeOrder)
+                _row(_typeIcon(t), _dirColor(_dirOf(t), p), _typeName[t]!,
+                    _typeGuide[t]!),
+              _title('What the status means'),
+              for (final s in _Status.values)
+                _row(s.icon, s.color(p), s.label, s.meaning),
+              _title('Words you may see'),
+              _term2('Target price',
+                  'The price you pick. When the stock reaches it, we notify you.'),
+              _term2('Breakout',
+                  'When a price pushes past a level it has struggled to cross before. Traders often see it as the start of a bigger move.'),
+              _term2("Today's high / low",
+                  'The highest and lowest prices the stock has traded at so far today.'),
+              _term2('52-week high / low',
+                  'The highest and lowest prices the stock has traded at in the past year.'),
+              const SizedBox(height: 12),
+              Text('Alerts are notifications, not advice to buy or sell.',
+                  style: TextStyle(fontSize: 12, color: p.muted)),
+            ],
+          ),
         ),
       ),
     );

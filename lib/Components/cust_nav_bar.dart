@@ -59,7 +59,7 @@ class CustomBottomNavBar extends StatelessWidget {
                 _buildNavItem(2, FontAwesomeIcons.chartLine,
                     FontAwesomeIcons.chartLine, "Live", context),
                 _buildNavItem(3, FontAwesomeIcons.chartPie,
-                    FontAwesomeIcons.chartPie, "Movers", context),
+                    FontAwesomeIcons.chartPie, "Tools", context),
                 _buildNavItem(4, Icons.person_outline, Icons.person_rounded,
                     "Profile", context),
               ],

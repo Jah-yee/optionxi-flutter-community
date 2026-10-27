@@ -186,7 +186,7 @@ class _OrderPlacedCardState extends State<_OrderPlacedCard>
                           if (widget.fromedit) {
                             Navigator.of(context).pop();
                           } else {
-                            Get.offNamed('/basket');
+                            Get.offNamed('/virtual-basket');
                           }
                         },
                         child: Container(
@@ -244,7 +244,7 @@ class _OrderPlacedCardState extends State<_OrderPlacedCard>
                             if (widget.fromedit) {
                               Navigator.of(context).pop();
                             } else {
-                              Get.offNamed('/basket');
+                              Get.offNamed('/virtual-basket');
                             }
                           },
                           style: ElevatedButton.styleFrom(

@@ -17,8 +17,11 @@ import 'package:optionxi/Main_Pages/Achivements/act_achievement_page.dart';
 import 'package:optionxi/Main_Pages/Community/community_sync_gate.dart';
 import 'package:optionxi/Main_Pages/IndicatorBacktest/indicator-backtest.dart';
 import 'package:optionxi/Main_Pages/Leaderboard/act_leaderboard.dart';
+import 'package:optionxi/Main_Pages/Learning/act_learn_optionxi.dart';
+import 'package:optionxi/Main_Pages/Learning/act_route_not_found.dart';
 import 'package:optionxi/Main_Pages/MarketSentiments/act_market_sentiments.dart';
 import 'package:optionxi/Main_Pages/MarketSentiments/act_market_sentiments_chart.dart';
+import 'package:optionxi/Main_Pages/News/act_news.dart';
 import 'package:optionxi/Main_Pages/ScreenerPro/act_custom_screener_pro.dart';
 import 'package:optionxi/Main_Pages/DeployedAlgos/Act_DeployedAlgos.dart';
 import 'package:optionxi/Main_Pages/AccuracyNiftyStocks/act_nifty_accuracy.dart';
@@ -40,6 +43,20 @@ import 'package:optionxi/homepage.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
+import 'package:optionxi/Main_Pages/TopGainers-Recommended/act_top_recommended_stock_page.dart';
+import 'package:optionxi/Main_Pages/TopGainers-Recommended/act_topgainers_losers.dart';
+import 'package:optionxi/Main_Pages/Scanner/act_scanner_page.dart';
+import 'package:optionxi/Main_Pages/OptionCalculator/act_optionchain_master.dart';
+import 'package:optionxi/Main_Pages/OptionCalculator/act_option_calculator.dart';
+import 'package:optionxi/Main_Pages/OptionCalculator/act_oi_analyser.dart';
+import 'package:optionxi/Main_Pages/AIIndexPick/act_index_pick.dart';
+import 'package:optionxi/Main_Pages/BollingerBreakouts/act_breakout_page.dart';
+import 'package:optionxi/Main_Pages/Sectorwise/act_sectorwise_page.dart';
+import 'package:optionxi/Main_Pages/AISummary/act_nifty_ai_summary.dart';
+import 'package:optionxi/Main_Pages/AISummary/act_stock_ai_summary.dart';
+import 'package:optionxi/StrategyBuilder/strategy_builder.dart';
+import 'package:optionxi/VirtualTradeJournal/act_journal_analytics.dart';
+import 'package:optionxi/Main_Pages/News/act_news.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -205,6 +222,10 @@ class MyApp extends StatelessWidget {
           themeMode:
               themeController.isDarkMode ? ThemeMode.dark : ThemeMode.light,
           getPages: _buildRoutes(),
+          unknownRoute: GetPage(
+            name: '/not-found',
+            page: () => RouteNotFoundPage(),
+          ),
         );
       },
     );
@@ -227,7 +248,7 @@ class MyApp extends StatelessWidget {
           name: '/premium-notifications',
           page: () => NotificationPage(initialTabIndex: 1)),
       GetPage(name: '/achievements', page: () => AchievementsPage()),
-      GetPage(name: '/basket', page: () => BasketFullPage()),
+      GetPage(name: '/virtual-basket', page: () => BasketFullPage()),
       GetPage(name: '/stocks', page: () => AllSearchPageMeili()),
       GetPage(name: '/leaderboard', page: () => LeaderboardPage()),
       GetPage(name: '/screenerpro', page: () => StockScreenerPagePro()),
@@ -261,33 +282,15 @@ class MyApp extends StatelessWidget {
           );
         },
       ),
+
       GetPage(
-        name: '/trade/orders',
+        name: '/virtual-trading/orders',
         page: () => PreviousDayTrading(initialFragIndex: 1),
         transition: Transition.fade,
       ),
       GetPage(name: '/connect/zerodha', page: () => ZerodhaConnectPage()),
       GetPage(name: '/connect/upstox', page: () => UpstoxConnectPage()),
       GetPage(name: '/connect/fyers', page: () => FyersConnectPage()),
-      GetPage(name: '/practice-trading', page: () => PreviousDayTrading()),
-      GetPage(name: '/deploy-algo', page: () => DeployedAlgosScreen()),
-
-      //Backtesting routes
-      GetPage(
-        name: '/backtest/nifty',
-        page: () => NiftyDashboardShell(),
-        transition: Transition.fade,
-      ),
-      GetPage(
-        name: '/backtest/ai-picks',
-        page: () => StockDashboardShell(),
-        transition: Transition.fade,
-      ),
-      GetPage(
-        name: '/backtest/screener',
-        page: () => ScreenerHistoryPage(),
-        transition: Transition.fade,
-      ),
 
       //Market Sentiments routes
       GetPage(
@@ -309,12 +312,166 @@ class MyApp extends StatelessWidget {
       ),
 
       //Saved backtest nifty
-
       GetPage(
         name: '/saved-backtest',
         page: () => SavedBacktestsPage(),
         transition: Transition.fade,
       ),
+
+      // Learning routes
+      GetPage(
+        name: '/learn-optionxi',
+        page: () => LearnOptionXIPage(),
+        transition: Transition.fade,
+      ),
+
+      // ═══════════ TOOLS TAB ROUTES (grouped like ToolsRegistry) ═══════════
+
+      // ── Find stocks ──
+      // top_picks
+      GetPage(
+        name: '/top-picks',
+        page: () => const TopRecommendedStockPage(),
+        transition: Transition.rightToLeft,
+      ),
+      // screeners  (predefined filters)
+      GetPage(
+        name: '/screeners',
+        page: () => const StockScreenerPage(),
+        transition: Transition.fade,
+      ),
+      // top_movers
+      GetPage(
+        name: '/top-movers',
+        page: () => const TopGainersLosersPage(),
+        transition: Transition.fade,
+      ),
+      // custom_screeners -> already exists: '/screenerpro'
+
+      // ── Options ──
+      // option_chain
+      GetPage(
+        name: '/option-chain',
+        page: () => const OptionChainPage(),
+        transition: Transition.fade,
+      ),
+      // option_budget  (FNO Budget)
+      GetPage(
+        name: '/option-budget',
+        page: () => const OptionCalculatorPage(),
+        transition: Transition.fade,
+      ),
+      // option_oi  (OI Activity)
+      GetPage(
+        name: '/option-oi',
+        page: () => const OiActivityPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── Index ──
+      // index_breakout  (Nifty / Bank Nifty day high-low breaks)
+      GetPage(
+        name: '/index-breakout',
+        page: () => const AIPickedIndexPage(),
+        transition: Transition.fade,
+      ),
+      // bollinger_alerts
+      GetPage(
+        name: '/bollinger-breakouts',
+        page: () => const BreakoutSignalsPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── Backtest ──
+      // strategy_backtest -> already exists: '/saved-backtest'
+
+      // option_testing  (virtual option buy + replay)
+      GetPage(
+        name: '/option-testing',
+        page: () => const StrategyBuilderPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── Sector ──
+      // sector_pulse
+      GetPage(
+        name: '/sector-pulse',
+        page: () => const SectorAnalysisPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── Practice trade ──
+      // practice_trade -> already exists: '/virtual-trading'
+      GetPage(
+        name: '/virtual-trading',
+        page: () => PreviousDayTrading(),
+        transition: Transition.fade,
+      ),
+
+      // ── AI tools ──
+      // ai_stock -> already exists: '/stocks' (search page; opens AI analysis per stock)
+      // direct link to one stock's AI analysis
+      GetPage(
+        name: '/ai-stock/:symbol',
+        page: () => StockAiAnalysisPage(symbol: Get.parameters['symbol'] ?? ''),
+        transition: Transition.rightToLeft,
+      ),
+      // ai_index
+      GetPage(
+        name: '/ai-index',
+        page: () => const NiftyAiSummaryPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── My tools ──
+      // trade_journal
+      GetPage(
+        name: '/journal',
+        page: () => const JournalAnalyticsPage(),
+        transition: Transition.fade,
+      ),
+      // my_alerts -> already exists: '/alerts'
+
+      // ── Performance ──
+      // ai_picks_accuracy    -> already exists: '/backtest/ai-picks'
+      // nifty_picks_accuracy -> already exists: '/backtest/nifty'
+      // scanner_picks        -> already exists: '/backtest/screener'
+      //Backtesting routes
+      GetPage(
+        name: '/backtest/nifty',
+        page: () => NiftyDashboardShell(),
+        transition: Transition.fade,
+      ),
+      GetPage(
+        name: '/backtest/ai-picks',
+        page: () => StockDashboardShell(),
+        transition: Transition.fade,
+      ),
+      GetPage(
+        name: '/backtest/screener',
+        page: () => ScreenerHistoryPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── Get notified ──
+      // alerts  (stock high/low breakouts). Not '/alerts/:stockName', that needs a name.
+      GetPage(
+        name: '/breakout-alerts',
+        page: () => StockAlertsPage(null),
+        transition: Transition.fade,
+      ),
+
+      // ── News ──
+      // market_news
+      GetPage(
+        name: '/news',
+        page: () => const NewsFeedPage(),
+        transition: Transition.fade,
+      ),
+
+      // ── Deploy Algo ──
+      // custom_algo -> already exists: '/deploy-algo'
+      GetPage(name: '/deploy-algo', page: () => DeployedAlgosScreen()),
     ];
   }
 }

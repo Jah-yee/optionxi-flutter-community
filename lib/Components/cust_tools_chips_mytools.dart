@@ -74,6 +74,7 @@ class _StockChipsSectionMyToolsState extends State<StockChipsSectionMyTools>
         ],
         onOpen: () =>
             Navigator.push(context, _fadeRoute(JournalAnalyticsPage())),
+        // onOpen: () => ()
       ),
       ToolItem(
         label: 'My Screeners',

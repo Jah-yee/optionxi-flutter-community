@@ -202,10 +202,6 @@ class _TradingProfilePageState extends State<TradingProfilePage>
                 padding: const EdgeInsets.all(8.0),
                 child: StockChipsSectionMyTools(),
               ),
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: ProUpgradeButton(),
-              ),
               const SizedBox(height: 12),
               _animSection(3, _buildPreferences(isDark)),
               const SizedBox(height: 24),
@@ -225,6 +221,10 @@ class _TradingProfilePageState extends State<TradingProfilePage>
                   padding: const EdgeInsets.all(16.0),
                   child: buildBrokerHub(context, _controller),
                 ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: ProUpgradeButton(),
               ),
               const SizedBox(height: 40),
             ],

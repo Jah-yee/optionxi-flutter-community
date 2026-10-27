@@ -109,7 +109,7 @@ class _OrderConfirmationDialogState extends State<_OrderConfirmationDialog>
                       Navigator.pop(context);
                       await BadgeService.incrementPortfolioBadge();
                       Get.offNamedUntil(
-                        '/trade/orders',
+                        '/virtual-trading/orders',
                         (route) => route.settings.name == '/',
                       );
                     },
