@@ -86,7 +86,7 @@ class GlobalSnackBarGet {
     );
   }
 
-  void showGetSucess(String head, String title, {int durationMs = 2000}) {
+  void showGetSuccess(String head, String title, {int durationMs = 2000}) {
     Get.snackbar(
       '',
       '',
